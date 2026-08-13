@@ -1,0 +1,14 @@
+{
+  "IsEncrypted": false,
+  "Values": {
+    "AzureWebJobsStorage": "<get from Protsahan - storage-connection-string>",
+    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "DEVICE_KEY": "<get from Protsahan - sent privately, not in repo/chat>",
+    "SQL_CONNECTION_STRING": "<Key Vault secret: sql-connection-string, ODBC format>",
+    "STORAGE_CONNECTION_STRING": "<Key Vault secret: storage-connection-string>",
+    "VISION_ENDPOINT": "<from cv-baettledger resource, e.g. https://cv-baettledger.cognitiveservices.azure.com>",
+    "VISION_KEY": "<Key Vault secret: vision-key>",
+    "FOUNDRY_ENDPOINT": "<Count Agent chat endpoint from aif-baettledger>",
+    "FOUNDRY_KEY": "<Key Vault secret: foundry-key>"
+  }
+}
