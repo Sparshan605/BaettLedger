@@ -97,7 +97,24 @@ def main(argv=None):
     PHOTO_DIR.mkdir(parents=True, exist_ok=True)
 
     lcd.show("BaettLedger", "starting...")
-    camera.warm_up()  # pay the 2s settle now, not on the first capture
+
+    try:
+        camera.warm_up()  # pay the 2s settle now, not on the first capture
+    except RuntimeError as exc:
+        # Almost always "Device or resource busy": something else already holds
+        # the camera, usually a manual `python3 -m edge.main` left running while
+        # the service is also up. picamera2 reports it as a bare RuntimeError
+        # with a stack trace, which reads like a wiring fault and costs an hour.
+        # Say what it actually is, on the display, where you can see it without
+        # a laptop. systemd restarts us, so this recovers by itself once the
+        # other process exits.
+        lcd.show("Camera busy", "2nd run open?")
+        print(f"camera unavailable: {exc}", file=sys.stderr)
+        print("something else holds the camera. Check for another "
+              "`python3 -m edge.main`, or `sudo systemctl stop baettledger`.",
+              file=sys.stderr)
+        lcd.close(blank=False)
+        return 1
 
     stale = _recover_open_sessions()
     if stale:
