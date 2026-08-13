@@ -2,3 +2,32 @@
 .venv/
 __pycache__/
 *.pyc
+node_modules
+dist
+.env
+.env.local
+*.local
+*.tsbuildinfo
+
+# --- Pi / edge (Sparshan) ---
+
+# Captured photos. Every count event writes one, and there are already ~3.5 MB
+# of test JPEGs in ~ on the Pi. None of them belong in git.
+*.jpg
+*.jpeg
+photos/
+
+# Local SQLite upload queue (edge/store.py)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# OS noise
+.DS_Store

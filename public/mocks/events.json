@@ -1,0 +1,115 @@
+{
+  "sess-2026-08-19-0815": [
+    {
+      "event_id": 41,
+      "sequence": 1,
+      "device_type": "cone",
+      "count": 1,
+      "confidence": 0.94,
+      "needs_review": false,
+      "reason": null,
+      "photo_url": "/mocks/placeholder.svg",
+      "captured_at": "2026-08-19T14:16:50Z",
+      "confirmed_at": null
+    },
+    {
+      "event_id": 42,
+      "sequence": 2,
+      "device_type": "cone",
+      "count": 2,
+      "confidence": 0.61,
+      "needs_review": true,
+      "reason": "devices overlap, could not separate",
+      "photo_url": "/mocks/placeholder.svg",
+      "captured_at": "2026-08-19T14:17:22Z",
+      "confirmed_at": null
+    },
+    {
+      "event_id": 43,
+      "sequence": 3,
+      "device_type": "sign",
+      "count": 1,
+      "confidence": 0.88,
+      "needs_review": false,
+      "reason": null,
+      "photo_url": "/mocks/placeholder.svg",
+      "captured_at": "2026-08-19T14:18:03Z",
+      "confirmed_at": null
+    },
+    {
+      "event_id": 44,
+      "sequence": 4,
+      "device_type": null,
+      "count": null,
+      "confidence": null,
+      "needs_review": false,
+      "reason": null,
+      "photo_url": "/mocks/placeholder.svg",
+      "captured_at": "2026-08-19T14:18:31Z",
+      "confirmed_at": null
+    },
+    {
+      "event_id": 45,
+      "sequence": 5,
+      "device_type": "unknown",
+      "count": 1,
+      "confidence": 0.55,
+      "needs_review": true,
+      "reason": "type not in approved list",
+      "photo_url": "/mocks/placeholder.svg",
+      "captured_at": "2026-08-19T14:19:00Z",
+      "confirmed_at": null
+    },
+    {
+      "event_id": 46,
+      "sequence": 6,
+      "device_type": "barricade",
+      "count": 1,
+      "confidence": 0.80,
+      "needs_review": false,
+      "reason": null,
+      "photo_url": "/mocks/placeholder.svg",
+      "captured_at": "2026-08-19T14:19:40Z",
+      "confirmed_at": null
+    }
+  ],
+  "sess-2026-08-19-1630": [
+    {
+      "event_id": 51,
+      "sequence": 1,
+      "device_type": "cone",
+      "count": 2,
+      "confidence": 0.91,
+      "needs_review": false,
+      "reason": null,
+      "photo_url": "/mocks/placeholder.svg",
+      "captured_at": "2026-08-19T22:31:05Z",
+      "confirmed_at": null
+    },
+    {
+      "event_id": 52,
+      "sequence": 2,
+      "device_type": "sign",
+      "count": 1,
+      "confidence": 0.9,
+      "needs_review": false,
+      "reason": null,
+      "photo_url": "/mocks/placeholder.svg",
+      "captured_at": "2026-08-19T22:32:10Z",
+      "confirmed_at": null
+    },
+    {
+      "event_id": 53,
+      "sequence": 3,
+      "device_type": "delineator",
+      "count": 1,
+      "confidence": 0.85,
+      "needs_review": false,
+      "reason": null,
+      "photo_url": "/mocks/placeholder.svg",
+      "captured_at": "2026-08-19T22:33:40Z",
+      "confirmed_at": null
+    }
+  ],
+  "sess-empty-demo": []
+}

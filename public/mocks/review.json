@@ -1,0 +1,28 @@
+{
+  "events": [
+    {
+      "event_id": 42,
+      "sequence": 2,
+      "device_type": "cone",
+      "count": 2,
+      "confidence": 0.61,
+      "needs_review": true,
+      "reason": "devices overlap, could not separate",
+      "photo_url": "/mocks/placeholder.svg",
+      "captured_at": "2026-08-19T14:17:22Z",
+      "confirmed_at": null
+    },
+    {
+      "event_id": 45,
+      "sequence": 5,
+      "device_type": "unknown",
+      "count": 1,
+      "confidence": 0.55,
+      "needs_review": true,
+      "reason": "type not in approved list",
+      "photo_url": "/mocks/placeholder.svg",
+      "captured_at": "2026-08-19T14:19:00Z",
+      "confirmed_at": null
+    }
+  ]
+}

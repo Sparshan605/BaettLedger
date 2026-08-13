@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 150">
+  <rect width="200" height="150" fill="#E2E8F0"/>
+  <text x="100" y="80" font-family="sans-serif" font-size="14" fill="#64748B" text-anchor="middle">mock photo</text>
+</svg>
