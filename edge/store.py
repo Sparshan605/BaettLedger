@@ -160,6 +160,47 @@ def open_sessions(db_path=None):
         )]
 
 
+def get_session(session_id, db_path=None):
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM session WHERE session_id = ?", (session_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+# How far a session has been mirrored to the API. Kept as one column rather than
+# two booleans so the states cannot contradict each other.
+SYNC_NONE = 0    # the server has never heard of it
+SYNC_OPEN = 1    # POST /api/sessions succeeded
+SYNC_CLOSED = 2  # POST /api/sessions/{id}/close succeeded
+
+
+def set_session_synced(session_id, state, db_path=None):
+    with _connect(db_path) as conn:
+        conn.execute("UPDATE session SET synced = ? WHERE session_id = ?",
+                     (state, session_id))
+
+
+def sessions_awaiting_close(db_path=None):
+    """Closed locally, fully uploaded, but the API has not been told yet.
+
+    This is where proposal §8 actually lands: the session is only reported
+    closed once every one of its photos has been accepted, so the cloud never
+    finalises a total on incomplete data.
+    """
+    with _connect(db_path) as conn:
+        return [dict(r) for r in conn.execute(
+            """SELECT s.* FROM session s
+               WHERE s.closed_at IS NOT NULL
+                 AND s.synced = ?
+                 AND NOT EXISTS (SELECT 1 FROM event e
+                                 WHERE e.session_id = s.session_id
+                                   AND e.uploaded_at IS NULL)
+               ORDER BY s.opened_at""",
+            (SYNC_OPEN,),
+        )]
+
+
 # ---------------------------------------------------------------------------
 # Events
 # ---------------------------------------------------------------------------

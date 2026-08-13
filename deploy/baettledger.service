@@ -1,0 +1,38 @@
+[Unit]
+Description=BaettLedger edge — capture, queue, upload
+Documentation=https://github.com/Sparshan605/BaettLedger
+
+# Ordering hint only. Deliberately NOT Requires= or Wants=network-online.target:
+# the Pi must count with no network at all (proposal §8), and a hard dependency
+# would stop the service starting on a hotspot that is not up yet — which is
+# precisely the demo-day situation.
+After=network.target
+
+[Service]
+Type=simple
+User=baettledger
+Group=baettledger
+
+# Needed so `python3 -m edge.main` can find the edge package.
+WorkingDirectory=/home/baettledger/BaettLedger
+ExecStart=/usr/bin/python3 -m edge.main
+
+# Without this, print() sits in a buffer and journalctl shows nothing for
+# minutes — which looks like a hang when you are debugging under pressure.
+Environment=PYTHONUNBUFFERED=1
+
+# Come back from anything: an unhandled exception, a camera glitch, an operator
+# stopping it by accident. 5s is long enough for the camera to be released and
+# short enough that nobody in the audience notices.
+Restart=always
+RestartSec=5
+
+# A cold boot has to open the camera and the I2C display; the default 90s is
+# plenty but being explicit stops a slow first boot looking like a failure.
+TimeoutStartSec=60
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
