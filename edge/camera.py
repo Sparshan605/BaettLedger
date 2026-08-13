@@ -14,6 +14,8 @@ from pathlib import Path
 
 from picamera2 import Picamera2
 
+from edge import OVERVIEW_ZONE, ZONES
+
 # Seconds to let auto-exposure and auto-white-balance settle after the sensor
 # starts. Only paid once, on the first capture. The tailgate is dim and photos
 # taken immediately after start() come out underexposed.
@@ -60,6 +62,42 @@ def get_frame(path):
     path.parent.mkdir(parents=True, exist_ok=True)
     _open().capture_file(str(path))
     return path
+
+
+def split_zones(path, out_dir=None):
+    """Cut one capture into the four images an inventory uploads.
+
+    Returns [(zone, Path), ...] for left, middle, right, overview — the three
+    thirds of the frame, then the untouched original.
+
+    Cropping rather than aiming is the whole point: thirds of one image cannot
+    overlap, so the zone sum is valid by construction. Aiming the camera three
+    times by hand cannot promise that, and an accidental overlap inflates the
+    count silently.
+
+    The overview entry is the original file, not a copy. It covers the same
+    devices as the three zones, so the backend counts it independently as a
+    cross-check and never adds it to the total (docs/api.md §6a).
+    """
+    from PIL import Image
+
+    path = Path(path)
+    out_dir = Path(out_dir) if out_dir else path.parent
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    with Image.open(path) as im:
+        width, height = im.size
+        # Integer thirds, with the last zone taking any remainder so the three
+        # crops tile the frame exactly — no gap, no overlap, nothing dropped.
+        edges = [0, width // 3, (width * 2) // 3, width]
+        frames = []
+        for zone, left, right in zip(ZONES, edges, edges[1:]):
+            crop_path = out_dir / f"{path.stem}_{zone}.jpg"
+            im.crop((left, 0, right, height)).save(crop_path, "JPEG", quality=90)
+            frames.append((zone, crop_path))
+
+    frames.append((OVERVIEW_ZONE, path))
+    return frames
 
 
 def exposure_info():
@@ -138,4 +176,32 @@ if __name__ == "__main__":
         print(f"FAIL — frame is a flat field (stddev {stddev:.1f}). Lit, but nothing in view.")
         sys.exit(1)
 
-    print("PASS — camera works and the frame has a real scene in it.")
+    # The four images an inventory actually uploads.
+    from PIL import Image
+
+    frames = split_zones(out)
+    print("  zones:")
+    total_width = 0
+    for zone, frame_path in frames:
+        with Image.open(frame_path) as im:
+            w, h = im.size
+        kb = frame_path.stat().st_size / 1024
+        print(f"    {zone:<9} {w:>5}x{h:<5} {kb:>6.0f} KB  {frame_path.name}")
+        if zone != OVERVIEW_ZONE:
+            total_width += w
+    print()
+
+    with Image.open(out) as im:
+        full_width, full_height = im.size
+
+    if len(frames) != len(ZONES) + 1:
+        print(f"FAIL — expected {len(ZONES) + 1} frames, got {len(frames)}.")
+        sys.exit(1)
+
+    if total_width != full_width:
+        print(f"FAIL — zone widths sum to {total_width}, frame is {full_width}.")
+        print("       The crops must tile the frame exactly: no gap, no overlap.")
+        sys.exit(1)
+
+    print(f"  crops tile the frame exactly: {total_width}px = {full_width}px, no overlap")
+    print("\nPASS — camera works, the frame has a real scene, and it splits cleanly.")
