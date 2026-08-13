@@ -25,6 +25,13 @@ instead, so there is no beam to break and the dead HC-SR04 blocks nothing.
 
 __version__ = "0.1.0"
 
+from pathlib import Path
+
+# Everything the Pi writes at runtime lives here, deliberately OUTSIDE the repo:
+# photos and the SQLite queue are data, not source, and keeping them out means a
+# stray `git add -A` cannot commit a few megabytes of JPEGs.
+DATA_DIR = Path.home() / "baettledger"
+
 # Identifies this Pi to the API. Must match what the backend expects; it is part
 # of the idempotency key (device_id, session_id, sequence) in docs/api.md §4.
 DEVICE_ID = "baettledger-01"
