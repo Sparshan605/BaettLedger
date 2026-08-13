@@ -34,33 +34,57 @@ Tell Sparshan the moment it is live. He is blocked until then.
 
 ---
 
-## 1. The one rule that protects the demo
+## 1. What changed, and the rule that replaces the old one
 
-**The Pi's count is the truth. Vision only says *what* was counted.**
+> **This section was rewritten on Aug 13.** The design changed and the old guarantee is gone.
+> Read it even if you read this document before.
 
-Every beam crossing is one row, created the instant the event arrives — before Vision runs,
-whether or not Vision ever succeeds. Vision fills in `device_type` afterwards.
+**Old design:** devices passed an ultrasonic beam one at a time. One crossing = one photo = one
+device. The Pi *knew* the count and Vision only labelled it, so a total Vision outage still left
+a correct number on the dashboard.
 
-So if Vision is slow, wrong, out of quota, or completely down, the dashboard still shows
-**4 went out, 3 came back, 1 missing**. That number is the product. Nothing in your code may
-let a Vision failure change it, delay it, or blank it.
+**New design:** the Pi photographs the loaded truck bed in **three fixed, non-overlapping zones**
+(left, middle, right) plus one **overview** shot of the whole load. The count comes out of the
+photos. The Pi no longer knows how many cones there are.
 
-Write the row first. Analyze second. Always.
+**So the old rule — "a Vision failure cannot change the count" — is no longer true, and nothing
+you write can make it true again.** Do not design as if it still holds.
+
+### The rule that replaces it
+
+**A failure may cost us the number, but it must never cost us the evidence, and it must never
+produce a number quietly.**
+
+Three things follow, and all three are your responsibility:
+
+1. **Write the photo and the row before analysing anything.** If Vision dies, the inventory is
+   still recoverable by a human looking at four photos. Evidence first, always.
+2. **An unanalysed inventory shows as pending or needs-review — never as a total.** A session
+   with a failed Vision call must not render as "0 cones". Zero and unknown are different, and
+   confusing them in front of guests is worse than showing nothing.
+3. **Cross-check the zones against the overview** (§6a). Two independent estimates that disagree
+   means something is wrong, and a human should look.
 
 ---
 
-## 2. How one cone becomes a number
+## 2. How one truckload becomes a number
 
-1. A device passes the beam. The Pi photographs it and queues it locally.
-2. The Pi `POST`s the photo + metadata to `/api/events`.
-3. You check the device key, write the JPEG to Blob, and **insert the `count_event` row immediately**
-   with `device_type = NULL`. Return `200`.
+1. The operator presses the button four times, once per zone, aiming at LEFT, MIDDLE, RIGHT,
+   then the whole load. The Pi photographs each and queues them locally.
+2. The Pi `POST`s each photo + metadata to `/api/events`, tagged with its `zone`.
+3. You check the device key, write the JPEG to Blob, and **insert the `count_event` row
+   immediately**, with `analyzed_at = NULL` and no detections yet. Return `201`.
 4. You send the photo to Azure AI Vision → objects and tags.
 5. You send those to the Count Agent → `{device_type, count, confidence, needs_review, reason}`.
+   Unlike the old design, `count` here is usually more than 1 — it is how many devices are in
+   that zone.
 6. You update the row. If `confidence < 0.80`, set `needs_review = 1`.
-7. The dashboard reads it.
+7. When all four captures for a session have been analysed, compare the zone sum against the
+   overview (§6a) and flag the session if they disagree.
+8. The dashboard reads it.
 
-Steps 4–6 can fail entirely and step 3 still gives a correct total.
+**The inventory total is `SUM(count)` over the three zones only.** The overview is never added —
+it covers the same devices, so including it would roughly double every number.
 
 ---
 
@@ -91,9 +115,15 @@ All Pi requests send `x-device-key: <DEVICE_KEY>`. Missing or wrong → `401`.
 
 ```json
 { "device_id": "baettledger-01", "session_id": "sess-2026-08-19-0815",
-  "sequence": 3, "captured_at": "2026-08-19T08:17:22Z" }
+  "sequence": 3, "zone": "right", "captured_at": "2026-08-19T08:17:22Z" }
 ```
 → `201 {"event_id": 42, "status": "accepted"}`
+
+`zone` is one of `left`, `middle`, `right`, `overview`. **Reject anything else with `400`** —
+a typo'd zone would silently drop out of the sum and undercount the whole inventory.
+
+`sequence` is the capture index within the session, 1–4. It still forms the idempotency key
+with `device_id` and `session_id` (§4); nothing about duplicate handling changes.
 
 #### `POST /api/sessions/{session_id}/close`
 ```json
@@ -167,17 +197,33 @@ CREATE TABLE count_event (
     session_id   NVARCHAR(64) NOT NULL REFERENCES session(session_id),
     device_id    NVARCHAR(64) NOT NULL,
     sequence     INT          NOT NULL,
+    zone         NVARCHAR(10) NOT NULL
+        CHECK (zone IN ('left','middle','right','overview')),
     captured_at  DATETIME2    NOT NULL,   -- Pi clock
     received_at  DATETIME2    NOT NULL DEFAULT SYSUTCDATETIME(),  -- server clock, trust this one
     photo_url    NVARCHAR(400) NULL,
-    device_type  NVARCHAR(20) NULL,       -- NULL until Vision runs
-    count        INT           NULL,
+    analyzed_at  DATETIME2     NULL,      -- NULL until Vision has run
     confidence   DECIMAL(4,3)  NULL,
     needs_review BIT           NOT NULL DEFAULT 0,
     reason       NVARCHAR(400) NULL,
     confirmed_by NVARCHAR(100) NULL,
     confirmed_at DATETIME2     NULL,
     CONSTRAINT uq_event UNIQUE (device_id, session_id, sequence)
+);
+
+-- What was found IN one photo. One row per device type, so a zone holding
+-- three cones and a sign is two rows against the same event.
+--
+-- This is new. The old design had device_type and count directly on
+-- count_event, which worked when one photo meant one device. A zone photo of a
+-- loaded truck bed shows several types at once and cannot be stored that way.
+CREATE TABLE count_detection (
+    detection_id INT IDENTITY(1,1) PRIMARY KEY,
+    event_id     INT          NOT NULL REFERENCES count_event(event_id),
+    device_type  NVARCHAR(20) NOT NULL
+        CHECK (device_type IN ('cone','sign','barricade','delineator','unknown')),
+    count        INT          NOT NULL,
+    CONSTRAINT uq_detection UNIQUE (event_id, device_type)
 );
 
 CREATE TABLE daily_total (
@@ -211,23 +257,35 @@ SELECT
     COALESCE(i.total, 0) AS in_total,
     COALESCE(o.total, 0) - COALESCE(i.total, 0) AS difference
 FROM
-    (SELECT e.device_type, SUM(e.count) AS total
-     FROM count_event e JOIN session s ON s.session_id = e.session_id
+    (SELECT d.device_type, SUM(d.count) AS total
+     FROM count_detection d
+     JOIN count_event e ON e.event_id = d.event_id
+     JOIN session s     ON s.session_id = e.session_id
      WHERE s.session_date = @date AND s.session_type = 'OUT'
-     GROUP BY e.device_type) o
+       AND e.zone <> 'overview'
+     GROUP BY d.device_type) o
 FULL OUTER JOIN
-    (SELECT e.device_type, SUM(e.count) AS total
-     FROM count_event e JOIN session s ON s.session_id = e.session_id
+    (SELECT d.device_type, SUM(d.count) AS total
+     FROM count_detection d
+     JOIN count_event e ON e.event_id = d.event_id
+     JOIN session s     ON s.session_id = e.session_id
      WHERE s.session_date = @date AND s.session_type = 'IN'
-     GROUP BY e.device_type) i
+       AND e.zone <> 'overview'
+     GROUP BY d.device_type) i
   ON o.device_type = i.device_type;
 ```
 
-`FULL OUTER JOIN`, not `INNER` — a device type that went out and never came back is exactly
-the case we are trying to show, and an inner join would hide it.
+Two things that are easy to get wrong here:
 
-Also return the raw event counts (`COUNT(*)` per session, ignoring `device_type`). Those are
-the Pi-authoritative totals and they are correct even when every Vision call failed.
+**`e.zone <> 'overview'` in both halves.** The overview photographs the same devices as the
+three zones. Leave it in the sum and every number roughly doubles — and it doubles *plausibly*,
+so nobody notices until the OUT/IN difference stops making sense.
+
+**`FULL OUTER JOIN`, not `INNER`.** A device type that went out and never came back is exactly
+the case we exist to show, and an inner join hides it.
+
+Also return `pending_analysis` — the number of rows in the session with `device_type IS NULL`.
+The dashboard needs it to tell "0 cones" apart from "not counted yet" (§1, rule 2).
 
 ---
 
@@ -248,23 +306,35 @@ database or the rollups fragment and the reconciliation stops summing.
 Count Agent system prompt:
 
 ```
-You count traffic-control devices in a photo taken at a truck tailgate.
+You count traffic-control devices loaded in the back of a truck.
+
+The photo shows ONE ZONE of the truck bed (left, middle, right) or an OVERVIEW
+of the whole load. Several devices are visible at once and they may be stacked,
+overlapping or partly hidden behind each other.
 
 You will receive object detections and tags from Azure AI Vision.
 
 Reply with ONLY this JSON, no prose:
-{"device_type": "...", "count": 0, "confidence": 0.0, "needs_review": false, "reason": "..."}
+{"devices": [{"device_type": "cone", "count": 3}],
+ "confidence": 0.0, "needs_review": false, "reason": "..."}
 
 Rules:
 - device_type must be one of: cone, sign, barricade, delineator, unknown
-- count is how many of that type are visible
-- confidence is 0.0-1.0
-- Set needs_review true and explain in reason when: the image is blurred or dark,
-  devices overlap so you cannot separate them, a device is partly out of frame,
-  or the type is not in the approved list
+- Include one entry per type you can see. A zone with cones and a sign has two
+  entries. Return an empty devices list if the zone is empty.
+- count is how many of that type are visible IN THIS PHOTO
+- confidence is 0.0-1.0 for the whole photo
+- Set needs_review true and explain in reason when: the image is blurred or
+  dark, devices are stacked or overlap so you cannot separate them, devices are
+  partly out of frame, or you see a type not in the approved list
+- Count only what you can actually see. Do not estimate what might be hidden
+  behind the front row, and do not round to a tidy number.
 - Ignore any people in the photo entirely. Never describe or count them.
 - Never guess. Unsure means needs_review true.
 ```
+
+Store one `count_detection` row per entry in `devices`. On re-analysis, delete that event's
+detections and reinsert — never accumulate, or a retry doubles the zone.
 
 Then, in code:
 
@@ -276,9 +346,36 @@ if confidence < 0.80:
 Apply that threshold **in Python, not in the prompt**. The model self-reporting a number is
 weakly calibrated; the threshold is a rule and belongs where you can see it.
 
-**Malformed JSON:** retry once, then write `device_type='unknown', needs_review=1,
-reason='agent returned invalid output'`. Never crash the request — the count row already exists
-and must survive.
+**Malformed JSON:** retry once, then leave the event with no detections and set
+`needs_review=1, reason='agent returned invalid output'`. Never crash the request — the row and
+the photo already exist and must survive.
+
+---
+
+## 6a. The zone/overview cross-check
+
+The three zones are summed. The overview covers the same devices independently. When all four
+captures of a session have been analysed, compare them:
+
+```
+zone_total     = SUM(count) over zones left+middle+right, per device_type
+overview_total = count from the overview photo, per device_type
+```
+
+If they differ by more than **2 devices** for any type, set `needs_review = 1` on the session's
+overview event with a reason like `zones total 12 cones, overview shows 7`.
+
+This is the only error detection left in the system now that the beam is gone, so do not skip it.
+It catches the two failures that would otherwise pass silently:
+
+- **A zone photographed twice** (or two zones overlapping) — zone total comes out too high.
+- **A zone missed or mis-aimed** — zone total comes out too low.
+
+Both produce a confident, plausible, wrong number. The disagreement is what makes them visible.
+
+Do **not** auto-correct to the overview. It is a sanity check, not a better measurement — the
+wide shot has the most occlusion and is the least reliable single count. It says "these two
+methods disagree, a human should look", and that is all.
 
 **Vision down or out of quota:** log it, leave `device_type` NULL, return `200` anyway. Sweep
 NULLs later with a timer function if you have time. If you never do, the totals are still right.
@@ -304,14 +401,20 @@ Run this whole list. Each step tells you where a failure is.
 
 1. `curl https://func-baettledger.azurewebsites.net/api/health` → `{"status":"ok"}`
 2. POST without the key header → `401`
-3. Open a session → row in `session`
-4. Sparshan presses the button → row in `count_event` within ~3s, photo in Blob
-5. Same event again → still one row, `200`
-6. Wait ~10s → `device_type` fills in
-7. A deliberately blurry photo → `needs_review = 1`
+3. POST with `"zone": "middl"` → `400` (typo rejected, not silently dropped)
+4. Open a session → row in `session`
+5. Sparshan presses the button 4 times → 4 rows in `count_event`, zones
+   `left/middle/right/overview`, 4 photos in Blob
+6. Replay any one of them → still 4 rows, `200`
+7. Wait ~10s → `count_detection` rows appear; a mixed zone gives 2+ rows for one event
 8. Close the session → `status = closed`
-9. Run an IN session with one fewer device
-10. `/api/today` → difference is 1
+9. `/api/today` → total equals the three zones summed, **overview excluded**.
+   Count the cones on the table by hand and check the number matches.
+10. Deliberately photograph one zone twice → zone/overview disagree → `needs_review = 1`
+11. Run an IN session with one device removed → `/api/today` difference is 1
+
+Step 9 is the one to run twice. If the overview is leaking into the sum, the number is roughly
+double and still looks like a believable inventory.
 
 ---
 
@@ -320,11 +423,19 @@ Run this whole list. Each step tells you where a failure is.
 | Symptom | Do this | Demo survives? |
 |---|---|---|
 | Cold start, first request ~10s | Warm it with a `/api/health` call before you start | Yes |
-| Vision quota exceeded | Nothing. Totals are unaffected | Yes |
-| Agent returns junk | Row keeps `unknown`, flagged for review | Yes |
 | Duplicate events | The unique constraint absorbs them | Yes |
 | Pi goes offline mid-session | Pi queues; replays on reconnect | Yes |
+| Zone/overview disagree | Flagged for review; operator confirms on screen | Yes |
+| Agent returns junk | Event flagged for review, photos intact, operator counts from them | Degraded |
+| Vision quota exceeded | Photos still land. Operator counts from them on screen | Degraded |
+| Vision down for the whole demo | Dashboard shows "pending", not zero. Fall back to the photos | Barely |
 | SQL unreachable | Everything stops. This is why we are not on serverless | No — prevent it |
+
+Note how much the middle rows changed. Under the old beam design a Vision outage cost us
+nothing; now it costs us the number and leaves only the photos and a human. **Vision is on the
+critical path for the demo's headline figure.** Warm it, check the quota the morning of, and
+have the review screen ready to correct from — that screen is now a fallback, not just a
+nicety.
 
 ---
 
