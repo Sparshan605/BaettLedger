@@ -3,21 +3,30 @@ name: Deploy Function App
 # The dashboard already deploys itself (azure-static-web-apps-*.yml). This does
 # the same for the backend, so a merge to main updates both halves together and
 # nobody has to remember `func azure functionapp publish` again.
+# Manual only until after the Aug 19 demo.
+#
+# A bad deploy takes the whole API down — we did exactly that once already, and
+# the app served 404s until it was republished by hand. Deploying on every push
+# means that can happen while nobody is watching, including an hour before the
+# demo. Until then, deploy deliberately: Actions tab -> Deploy Function App ->
+# Run workflow. The verify step below still proves the API answers afterwards.
+#
+# To restore automatic deploys after the demo, put this back above
+# workflow_dispatch:
+#
+#   push:
+#     branches: [main]
+#     paths:
+#       - "function_app.py"
+#       - "db.py"
+#       - "blob.py"
+#       - "vision.py"
+#       - "agent.py"
+#       - "host.json"
+#       - "requirements.txt"
+#       - ".github/workflows/deploy-functions.yml"
 on:
-  push:
-    branches: [main]
-    # Only rebuild when backend code actually changes. Editing the Pi code or a
-    # doc should not redeploy Azure.
-    paths:
-      - "function_app.py"
-      - "db.py"
-      - "blob.py"
-      - "vision.py"
-      - "agent.py"
-      - "host.json"
-      - "requirements.txt"
-      - ".github/workflows/deploy-functions.yml"
-  workflow_dispatch: # so you can redeploy by hand from the Actions tab
+  workflow_dispatch:
 
 env:
   AZURE_FUNCTIONAPP_NAME: func-baettledger
