@@ -35,9 +35,18 @@ def load(path=None):
 
 
 def api_url(path=None):
-    """Base URL with no trailing slash, or None if unset."""
-    url = load(path).get("API_URL", "").rstrip("/")
-    return url or None
+    """Base URL with no trailing slash, or None if unset.
+
+    Adds https:// if the scheme was left off. Pasting a bare hostname is an
+    easy mistake and requests rejects it with MissingSchema, an error that
+    points nowhere near the actual cause.
+    """
+    url = load(path).get("API_URL", "").strip().rstrip("/")
+    if not url:
+        return None
+    if not url.startswith(("http://", "https://")):
+        url = "https://" + url
+    return url
 
 
 def device_key(path=None):
