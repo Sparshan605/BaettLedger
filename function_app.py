@@ -1,6 +1,12 @@
 """
 BaettLedger API — Azure Function App (Python 3.11, Consumption plan).
-Owner: Shivang. Source of truth for all shapes: docs/api.md.
+v2, zone-based architecture (Aug 13 rewrite — the beam sensor is gone).
+Owner: Shivang. Source of truth for all shapes: docs/api.md, docs/dashboard.md.
+
+A session now produces FOUR photos: left, middle, right, overview. Each photo
+(count_event row) can hold several device types at once (count_detection
+rows). Vision/Agent failure can cost us the number but never the photo, and
+never a silent zero (api.md §1).
 
 Routes:
   Pi-facing:        GET /api/health, POST /api/sessions, POST /api/events,
@@ -67,7 +73,7 @@ def create_session(req: func.HttpRequest) -> func.HttpResponse:
 
 
 # ---------------------------------------------------------------------------
-# POST /api/events  — the important one. Write the row FIRST. Analyze second.
+# POST /api/events  — one of the four zone photos. Write the row FIRST.
 # ---------------------------------------------------------------------------
 @app.route(route="events", methods=["POST"], auth_level=func.AuthLevel.ANONYMOUS)
 def create_event(req: func.HttpRequest) -> func.HttpResponse:
@@ -84,37 +90,52 @@ def create_event(req: func.HttpRequest) -> func.HttpResponse:
         device_id = metadata["device_id"]
         session_id = metadata["session_id"]
         sequence = int(metadata["sequence"])
+        zone = metadata["zone"]
         captured_at = _parse_iso(metadata["captured_at"])
         photo_bytes = photo_file.read()
     except (ValueError, KeyError, json.JSONDecodeError) as e:
         return _json({"error": f"bad payload: {e}"}, 400)
 
-    # Step 3 (api.md §2): write the JPEG to Blob, insert the row immediately.
-    # This must succeed and return 201/200 whether or not Vision ever runs.
+    # api.md §3: an invalid zone must be rejected outright, not silently
+    # dropped — a typo'd zone would undercount the whole inventory.
+    if zone not in db.APPROVED_ZONES:
+        return _json({"error": f"zone must be one of {sorted(db.APPROVED_ZONES)}"}, 400)
+
+    # Write the JPEG to Blob, insert the row immediately, analyzed_at=NULL.
+    # This must succeed and return 201/200 whether or not Vision ever runs
+    # (api.md §1: a failure may cost the number, never the evidence).
     photo_url = blob.upload_photo(device_id, session_id, sequence, photo_bytes)
-    status, event_id, clock_skew = db.insert_event(device_id, session_id, sequence, captured_at, photo_url)
+    status, event_id, clock_skew = db.insert_event(
+        device_id, session_id, sequence, zone, captured_at, photo_url
+    )
 
     if clock_skew:
         logging.warning("captured_at more than a day off received_at for event %s", event_id)
 
     if status == "duplicate":
-        # Same (device, session, sequence) seen again — this is correct behaviour,
+        # Same (device, session, sequence) seen again — correct behaviour,
         # not a bug. No second row, no second photo, no second Vision call.
         return _json({"event_id": event_id, "status": "accepted"}, 200)
 
-    # Steps 4-6 (api.md §2): Vision -> Count Agent -> update row.
-    # Any failure here must never affect the 201 already implied by the row existing.
+    # Vision -> Count Agent -> save detections -> zone/overview cross-check.
+    # Any failure here must never affect the 201 already implied by the row
+    # existing. On vision failure, deliberately do NOT call save_detections,
+    # so analyzed_at stays NULL and the dashboard shows "pending", not "0".
     try:
         vision_result = vision.analyze_image(photo_bytes)
         result = agent.count_devices(vision_result)
-        db.update_event_analysis(
-            event_id,
-            result["device_type"], result["count"], result["confidence"],
-            result["needs_review"], result["reason"],
-        )
+        if result["devices"] is not None:
+            db.save_detections(
+                event_id, result["devices"], result["confidence"],
+                result["needs_review"], result["reason"],
+            )
+            db.run_zone_overview_cross_check(session_id)
+        else:
+            logging.warning("Vision unavailable for event %s; leaving unanalyzed", event_id)
     except Exception as e:
         logging.error("Analysis pipeline failed for event %s: %s", event_id, e)
-        # Row already exists with device_type=NULL — totals are still correct.
+        # Row and photo already exist with analyzed_at=NULL — recoverable from
+        # the photo alone even if this whole pipeline is down (api.md §1).
 
     return _json({"event_id": event_id, "status": "accepted"}, 201)
 
@@ -174,13 +195,12 @@ def confirm_event(req: func.HttpRequest) -> func.HttpResponse:
     event_id = req.route_params.get("event_id")
     try:
         payload = req.get_json()
-        device_type = payload["device_type"]
-        count = int(payload["count"])
+        devices = payload["devices"]  # list of {device_type, count}; [] zeroes the zone
     except (ValueError, KeyError) as e:
         return _json({"error": f"bad payload: {e}"}, 400)
 
     try:
-        confirmed_at = db.confirm_event(int(event_id), device_type, count)
+        confirmed_at = db.confirm_event(int(event_id), devices)
     except ValueError as e:
         return _json({"error": str(e)}, 400)
 

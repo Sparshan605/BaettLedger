@@ -1,5 +1,8 @@
--- BaettLedger schema — run this against sql-baettledger (Basic tier), db name "baettledger"
--- Source: docs/api.md §5. Run this on Aug 14 before writing any events.
+-- BaettLedger schema — v2, zone-based architecture (Aug 13 rewrite)
+-- Source: docs/api.md §5. The beam sensor is gone. One session now produces
+-- FOUR photos (left, middle, right, overview), each of which may show
+-- several device types at once. Run this against a fresh database — it is
+-- NOT an ALTER script over the old beam-era schema.
 
 CREATE TABLE session (
     session_id     NVARCHAR(64)  PRIMARY KEY,
@@ -11,22 +14,37 @@ CREATE TABLE session (
     status         NVARCHAR(10)  NOT NULL DEFAULT 'open'
 );
 
+-- One row per PHOTO now, not one row per device. zone tells you which of the
+-- four captures this is. device_type/count no longer live here — see
+-- count_detection below, since one photo can hold several device types.
 CREATE TABLE count_event (
     event_id     INT IDENTITY(1,1) PRIMARY KEY,
     session_id   NVARCHAR(64) NOT NULL REFERENCES session(session_id),
     device_id    NVARCHAR(64) NOT NULL,
-    sequence     INT          NOT NULL,
+    sequence     INT          NOT NULL,   -- 1-4 within the session
+    zone         NVARCHAR(10) NOT NULL
+        CHECK (zone IN ('left','middle','right','overview')),
     captured_at  DATETIME2    NOT NULL,   -- Pi clock
     received_at  DATETIME2    NOT NULL DEFAULT SYSUTCDATETIME(),  -- server clock, trust this one
     photo_url    NVARCHAR(400) NULL,
-    device_type  NVARCHAR(20) NULL,       -- NULL until Vision runs
-    count        INT           NULL,
+    analyzed_at  DATETIME2     NULL,      -- NULL until Vision + Agent have run
     confidence   DECIMAL(4,3)  NULL,
     needs_review BIT           NOT NULL DEFAULT 0,
     reason       NVARCHAR(400) NULL,
     confirmed_by NVARCHAR(100) NULL,
     confirmed_at DATETIME2     NULL,
     CONSTRAINT uq_event UNIQUE (device_id, session_id, sequence)
+);
+
+-- What was found IN one photo. One row per device type, so a zone holding
+-- three cones and a sign is two rows against the same event.
+CREATE TABLE count_detection (
+    detection_id INT IDENTITY(1,1) PRIMARY KEY,
+    event_id     INT          NOT NULL REFERENCES count_event(event_id),
+    device_type  NVARCHAR(20) NOT NULL
+        CHECK (device_type IN ('cone','sign','barricade','delineator','unknown')),
+    count        INT          NOT NULL,
+    CONSTRAINT uq_detection UNIQUE (event_id, device_type)
 );
 
 CREATE TABLE daily_total (
