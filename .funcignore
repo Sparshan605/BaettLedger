@@ -1,0 +1,25 @@
+.git*
+.vscode
+.venv
+__pycache__
+local.settings.json
+.env
+.env.example
+
+# The dashboard (Static Web Apps deploys this, not the Function App)
+src/
+public/
+node_modules/
+dist/
+index.html
+package.json
+package-lock.json
+tsconfig.json
+vite.config.ts
+
+# The Raspberry Pi code — imports picamera2/gpiozero, which do not exist in Azure
+edge/
+deploy/
+
+docs/
+*.md

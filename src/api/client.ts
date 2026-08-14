@@ -5,11 +5,19 @@ import type {
   TodaySummary,
 } from "../types";
 
-// Per docs/dashboard.md §4: build against static mock JSON first, then swap one
-// base URL once the real Function App is live. Empty VITE_API_BASE means "use mocks".
-const API_BASE = import.meta.env.VITE_API_BASE ?? "";
-const USE_MOCKS = API_BASE === "";
-const MOCKS_BASE = "/mocks";
+// Always the real API. There is deliberately no mock fallback.
+//
+// The dashboard was originally built against static JSON in /mocks so the
+// screens could be written before the backend existed. Once deployed, that
+// fallback showed fabricated numbers — 15 out, 3 in, 12 missing — under a green
+// "live" badge, because VITE_API_BASE was unset at build time and nothing
+// distinguished sample data from real data on screen.
+//
+// A real zero is honest and a fabricated total is not, so the default is now the
+// production API rather than mocks. If the backend is down the screens show
+// their error and empty states, which is the correct thing to show.
+const DEFAULT_API_BASE = "https://func-baettledger.azurewebsites.net";
+const API_BASE = (import.meta.env.VITE_API_BASE ?? DEFAULT_API_BASE).replace(/\/+$/, "");
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -20,30 +28,18 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 }
 
 export async function getToday(date: string): Promise<TodaySummary> {
-  if (USE_MOCKS) {
-    return fetchJson<TodaySummary>(`${MOCKS_BASE}/today.json`);
-  }
-  return fetchJson<TodaySummary>(`${API_BASE}/api/today?date=${encodeURIComponent(date)}`);
+  return fetchJson<TodaySummary>(
+    `${API_BASE}/api/today?date=${encodeURIComponent(date)}`,
+  );
 }
 
 export async function getEvents(sessionId: string): Promise<EventsResponse> {
-  if (USE_MOCKS) {
-    // The mock file is one dictionary keyed by session_id so both OUT and IN
-    // tabs can be exercised from a single static fixture.
-    const all = await fetchJson<Record<string, EventsResponse["events"]>>(
-      `${MOCKS_BASE}/events.json`,
-    );
-    return { events: all[sessionId] ?? [] };
-  }
   return fetchJson<EventsResponse>(
     `${API_BASE}/api/events?session_id=${encodeURIComponent(sessionId)}`,
   );
 }
 
 export async function getReview(): Promise<EventsResponse> {
-  if (USE_MOCKS) {
-    return fetchJson<EventsResponse>(`${MOCKS_BASE}/review.json`);
-  }
   return fetchJson<EventsResponse>(`${API_BASE}/api/review`);
 }
 
@@ -51,12 +47,6 @@ export async function confirmEvent(
   eventId: number,
   payload: ConfirmPayload,
 ): Promise<ConfirmResponse> {
-  if (USE_MOCKS) {
-    // No backend to write to in mock mode — simulate the round trip so the UI
-    // flow (tap row, correct it, watch it turn green) is fully testable offline.
-    await new Promise((resolve) => setTimeout(resolve, 200));
-    return { event_id: eventId, confirmed_at: new Date().toISOString() };
-  }
   return fetchJson<ConfirmResponse>(`${API_BASE}/api/events/${eventId}/confirm`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },

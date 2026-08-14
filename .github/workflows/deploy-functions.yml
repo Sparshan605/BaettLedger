@@ -1,0 +1,64 @@
+name: Deploy Function App
+
+# The dashboard already deploys itself (azure-static-web-apps-*.yml). This does
+# the same for the backend, so a merge to main updates both halves together and
+# nobody has to remember `func azure functionapp publish` again.
+on:
+  push:
+    branches: [main]
+    # Only rebuild when backend code actually changes. Editing the Pi code or a
+    # doc should not redeploy Azure.
+    paths:
+      - "function_app.py"
+      - "db.py"
+      - "blob.py"
+      - "vision.py"
+      - "agent.py"
+      - "host.json"
+      - "requirements.txt"
+      - ".github/workflows/deploy-functions.yml"
+  workflow_dispatch: # so you can redeploy by hand from the Actions tab
+
+env:
+  AZURE_FUNCTIONAPP_NAME: func-baettledger
+  PYTHON_VERSION: "3.11"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      # Azure runs the app from this folder, so dependencies must be vendored
+      # into it rather than installed into the runner's own site-packages.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt --target=".python_packages/lib/site-packages"
+
+      - name: Deploy
+        uses: Azure/functions-action@v1
+        with:
+          app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
+          scm-do-build-during-deployment: false
+          enable-oryx-build: false
+
+      # A deploy that reports success while the app 404s is the failure mode we
+      # actually hit, so prove the API answers before calling this green.
+      - name: Verify the API is alive
+        run: |
+          for i in 1 2 3 4 5 6; do
+            code=$(curl -s -m 30 -o /dev/null -w "%{http_code}" \
+              "https://${{ env.AZURE_FUNCTIONAPP_NAME }}.azurewebsites.net/api/health")
+            echo "attempt $i: /api/health -> $code"
+            if [ "$code" = "200" ]; then echo "API is live"; exit 0; fi
+            sleep 20
+          done
+          echo "::error::/api/health never returned 200 after deploy"
+          exit 1
