@@ -72,8 +72,31 @@ def run_inventory(countdown=COUNTDOWN_SECONDS):
 
 
 def _idle_screen():
-    lcd.show("BaettLedger", f"Ready: {store.next_direction():<3}"
-                            f"   q{store.pending_count():>2}")
+    """Waiting for a press. Says which half of the day comes next.
+
+    A run is two presses: OUT loads the truck, IN brings it back. The operator
+    should never have to remember which one they are on, so the direction is on
+    the screen rather than in their head. q is the upload backlog.
+    """
+    direction = store.next_direction()
+    prompt = "Press: load OUT" if direction == "OUT" else "Press: return IN"
+    lcd.show(prompt, f"{direction:<3}          q{store.pending_count():>2}")
+
+
+def _after_inventory(direction, rows):
+    """The screen shown right after a capture, before returning to idle.
+
+    OUT is only half a run, so it points at the next step. IN completes the
+    pair the dashboard reconciles, so it says so — otherwise there is no signal
+    on the device that the day's comparison is ready.
+    """
+    lcd.show(f"{direction} captured", f"{len(rows)} photos queued")
+    time.sleep(2)
+    if direction == "OUT":
+        lcd.show("OUT done", "Next: return IN")
+    else:
+        lcd.show("Day complete", "OUT + IN sent")
+    time.sleep(3)
 
 
 def _recover_open_sessions():
@@ -127,6 +150,8 @@ def main(argv=None):
         for row in rows:
             print(f"  seq {row['sequence']}  {row['zone']:<9} {row['photo_path']}")
         print(f"pending upload: {store.pending_count()}")
+        _after_inventory(session["session_type"], rows)
+        lcd.close(blank=False)  # leave the result readable after we exit
         return 0
 
     print("waiting for presses. Ctrl+C to stop.")
@@ -138,7 +163,7 @@ def main(argv=None):
             session, rows = run_inventory()
             print(f"{session['session_type']}  {session['session_id']}  "
                   f"{len(rows)} queued  (pending {store.pending_count()})")
-            time.sleep(2)  # leave the result up long enough to read
+            _after_inventory(session["session_type"], rows)
     except KeyboardInterrupt:
         print("\nstopping.")
     finally:

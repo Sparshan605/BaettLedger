@@ -243,14 +243,18 @@ def get_today(date_str):
     with get_connection() as conn:
         cur = conn.cursor()
 
-        # Newest first. Without the ORDER BY, next() below picked whichever row
-        # SQL happened to return first — in practice the oldest — so re-running
-        # an inventory left the dashboard's Photos screen showing the first
-        # capture of the day while the totals already included the newest one.
+        # The day's most recent OUT and most recent IN — a matched pair.
         #
-        # The totals themselves are unaffected: the reconciliation below sums
-        # every session of the day. This only chooses which session the Photos
-        # screen links to, and that should be the most recent.
+        # This used to sum every session of the day. In real operation that is
+        # the same thing, because a day has one morning load and one evening
+        # return. In practice it meant every rehearsal accumulated: five test
+        # captures made "starting inventory" the sum of all five, and a stale
+        # OUT from hours earlier was reconciled against a fresh IN.
+        #
+        # Comparing the latest pair makes a re-run replace the previous one
+        # instead of adding to it, so you can rehearse repeatedly and always
+        # see just this run. The tradeoff: if a crew genuinely ran two separate
+        # OUT loads in one day, only the later one counts.
         cur.execute(
             """SELECT session_id, session_type, status FROM session
                WHERE session_date = ?
@@ -260,6 +264,11 @@ def get_today(date_str):
         sessions = cur.fetchall()
         out_session = next(({"session_id": r[0], "status": r[2]} for r in sessions if r[1] == "OUT"), None)
         in_session = next(({"session_id": r[0], "status": r[2]} for r in sessions if r[1] == "IN"), None)
+
+        # NULL is fine — the FULL OUTER JOIN below simply finds no rows on that
+        # side, which is exactly right before the first inventory of the day.
+        out_id = out_session["session_id"] if out_session else None
+        in_id = in_session["session_id"] if in_session else None
 
         # Reconciliation query, verbatim from api.md §5 — count_detection joined
         # through count_event, overview excluded from both halves.
@@ -274,21 +283,19 @@ def get_today(date_str):
                 (SELECT d.device_type, SUM(d.count) AS total
                  FROM count_detection d
                  JOIN count_event e ON e.event_id = d.event_id
-                 JOIN session s     ON s.session_id = e.session_id
-                 WHERE s.session_date = ? AND s.session_type = 'OUT'
+                 WHERE e.session_id = ?
                    AND e.zone <> 'overview'
                  GROUP BY d.device_type) o
             FULL OUTER JOIN
                 (SELECT d.device_type, SUM(d.count) AS total
                  FROM count_detection d
                  JOIN count_event e ON e.event_id = d.event_id
-                 JOIN session s     ON s.session_id = e.session_id
-                 WHERE s.session_date = ? AND s.session_type = 'IN'
+                 WHERE e.session_id = ?
                    AND e.zone <> 'overview'
                  GROUP BY d.device_type) i
               ON o.device_type = i.device_type
             """,
-            date_str, date_str,
+            out_id, in_id,
         )
         by_type = [
             {"device_type": r[0] or "pending", "out_total": r[1], "in_total": r[2], "difference": r[3]}
@@ -298,10 +305,13 @@ def get_today(date_str):
         starting_inventory = sum(r["out_total"] for r in by_type)
         ending_inventory = sum(r["in_total"] for r in by_type)
 
+        # Scoped to the same pair as the totals. Counting the whole day would
+        # mark the screen "still analyzing" because of an old test capture that
+        # has nothing to do with the run being shown.
         cur.execute(
-            """SELECT COUNT(*) FROM count_event e JOIN session s ON s.session_id = e.session_id
-               WHERE s.session_date = ? AND e.analyzed_at IS NULL""",
-            date_str,
+            """SELECT COUNT(*) FROM count_event e
+               WHERE e.session_id IN (?, ?) AND e.analyzed_at IS NULL""",
+            out_id, in_id,
         )
         pending_analysis = cur.fetchone()[0]
 
