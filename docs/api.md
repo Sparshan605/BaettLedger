@@ -82,10 +82,10 @@ Three things follow, and all three are your responsibility:
    then `closeup`.
 3. You check the device key, write the JPEG to Blob, and **insert the `count_event` row
    immediately**, with `analyzed_at = NULL` and no detections yet. Return `201`.
-4. You send the photo to Azure AI Vision → objects and tags.
-5. You send those to the Count Agent → `{device_type, count, confidence, needs_review, reason}`.
-   Unlike the old design, `count` here is usually more than 1 — it is how many devices are in
-   that photo.
+4. You send the photo to Azure AI Vision → objects and tags. This is a **hint only** (see §6).
+5. You send **the JPEG itself**, plus that hint, to the Count Agent →
+   `{devices, confidence, needs_review, reason}`. Unlike the old design, `count` here is usually
+   more than 1 — it is how many devices are in that photo.
 6. You update the row. If `confidence < 0.80`, set `needs_review = 1`.
 7. When both captures for a session have been analysed, compare the two (§6a) and flag the
    session if they disagree.
@@ -320,18 +320,45 @@ cone · sign · barricade · delineator
 Anything else → `device_type = "unknown"`, `needs_review = 1`. Do not let free text into the
 database or the rollups fragment and the reconciliation stops summing.
 
+### The agent must SEE the photo (changed Aug 14)
+
+`count-agent` is **gpt-4o**, which is multimodal. It used to be sent Azure AI Vision's
+`objects,tags` JSON and nothing else, which capped the count at whatever a generic object
+detector recognises. Measured on a real load:
+
+```
+Vision returned : [{"object": "stop sign", "confidence": 0.826}]   <- that is ALL of it
+tags            : sign, text, traffic sign, signage, stop sign, wall, indoor, stop
+agent reported  : 1 sign
+actually there  : 1 sign, 4 cones, 2 barricades
+```
+
+Vision does not detect traffic cones, delineators or barricades at all. The agent was not wrong;
+it answered the only question it was asked. Send the JPEG as an `image_url` content part with
+`"detail": "high"` — low detail downsamples a 1080p frame to 512px, where a cone at the back of
+the bed is a few pixels. Same photo, image attached: `1 sign, 4 cone, 2 barricade` at 0.90.
+
+Two things that will bite you:
+
+- **Pass Vision's output as an explicitly unreliable hint, or not at all.** Handed over plainly,
+  the model anchors on "one stop sign" and reproduces the undercount.
+- **`response_format: {"type": "json_object"}` requires the literal word "json" somewhere in the
+  messages**, or the API returns `400 'messages' must contain the word 'json' in some form`.
+  Keep the reply-shape line in the prompt. Parse defensively anyway — the model started wrapping
+  its reply in a ```` ```json ```` fence the moment an image was added.
+
 Count Agent system prompt:
 
 ```
 You count traffic-control devices loaded in the back of a truck.
 
-The photo shows ONE ZONE of the truck bed (left, middle, right) or an OVERVIEW
-of the whole load. Several devices are visible at once and they may be stacked,
-overlapping or partly hidden behind each other.
+You are shown ONE photo of the load. It is either the wide shot of the whole bed
+or a tighter close-up of the same load. Devices may be stacked, nested, tipped
+over, leaning together or partly hidden behind each other.
 
-You will receive object detections and tags from Azure AI Vision.
+Count EVERY device you can see.
 
-Reply with ONLY this JSON, no prose:
+Reply with ONLY this JSON object, no prose and no code fence:
 {"devices": [{"device_type": "cone", "count": 3}],
  "confidence": 0.0, "needs_review": false, "reason": "..."}
 

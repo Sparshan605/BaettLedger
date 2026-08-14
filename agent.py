@@ -1,61 +1,144 @@
 """
-Count Agent (aif-baettledger) — v2, zone-based architecture.
+Count Agent (count-agent, gpt-4o) — v3, the model looks at the PHOTO.
 
-A photo now shows ONE ZONE of a loaded truck bed (or the overview), and can
-contain several device types at once — stacked, overlapping, partly hidden.
-The agent returns a LIST of {device_type, count}, not a single value.
+Until Aug 14 this sent Azure AI Vision's objects+tags JSON and nothing else, so
+the count could never be better than a generic object detector. On a real load
+Vision returned exactly one object — `stop sign` — and no cones or barricades at
+all, so the agent dutifully reported "1 sign" for a truck bed holding four cones
+and two barricades. It was not wrong; it was answering the only question it had
+been asked.
+
+count-agent is gpt-4o, which is multimodal. It now receives the JPEG itself, and
+Vision's detections come along only as a hint that is explicitly labelled as
+unreliable. On that same photo the count went from `1 sign` to
+`1 sign, 4 cone, 2 barricade` at 0.90 confidence.
+
 api.md §6 — system prompt is fixed, confidence threshold applied in Python,
 malformed JSON gets one retry then falls back to no detections + needs_review.
 """
-import os
+import base64
 import json
 import logging
+import os
+
 import requests
 
 APPROVED_DEVICE_TYPES = {"cone", "sign", "barricade", "delineator", "unknown"}
 
+# "high" tiles the image at full resolution instead of downsampling it to a
+# single 512px thumbnail. A cone at the back of the bed is a handful of pixels
+# in a 512px version of a 1920x1080 frame, which is the difference between
+# counting it and not. Costs about 1.1k prompt tokens per photo.
+IMAGE_DETAIL = "high"
+
 SYSTEM_PROMPT = """You count traffic-control devices loaded in the back of a truck.
 
-The photo shows ONE ZONE of the truck bed (left, middle, right) or an OVERVIEW
-of the whole load. Several devices are visible at once and they may be stacked,
-overlapping or partly hidden behind each other.
+You are shown ONE photo of the load. It is either the wide shot of the whole bed
+or a tighter close-up of the same load. Devices may be stacked, nested, tipped
+over, leaning together or partly hidden behind each other.
 
-You will receive object detections and tags from Azure AI Vision.
+Count EVERY device you can see.
 
-Reply with ONLY this JSON, no prose:
+Reply with ONLY this JSON object, no prose and no code fence. (The literal word
+"json" must stay in this prompt: the API rejects the request outright when
+response_format is json_object and no message mentions it.)
 {"devices": [{"device_type": "cone", "count": 3}],
  "confidence": 0.0, "needs_review": false, "reason": "..."}
 
+device_type must be exactly one of: cone, sign, barricade, delineator, unknown
+  cone        orange traffic cone, any height
+  sign        any sign on a stand, post or handheld paddle (STOP/SLOW included)
+  barricade   horizontal striped panel, trestle or A-frame barricade
+  delineator  slim vertical tube post, also called a candlestick or tubular marker
+  unknown     clearly a traffic-control device but none of the above
+
 Rules:
-- device_type must be one of: cone, sign, barricade, delineator, unknown
-- Include one entry per type you can see. A zone with cones and a sign has two
-  entries. Return an empty devices list if the zone is empty.
-- count is how many of that type are visible IN THIS PHOTO
-- confidence is 0.0-1.0 for the whole photo
-- Set needs_review true and explain in reason when: the image is blurred or
-  dark, devices are stacked or overlap so you cannot separate them, devices are
-  partly out of frame, or you see a type not in the approved list
-- Count only what you can actually see. Do not estimate what might be hidden
-  behind the front row, and do not round to a tidy number.
+- One entry per type. A load with cones and a sign has two entries. Return an
+  empty devices list only if there is genuinely nothing in the photo.
+- count is how many of that type you can SEE in this photo. Nested or stacked
+  cones still count individually — count the visible bases or tips.
+- Do not estimate what might be hidden behind the front row, and do not round
+  to a tidy number.
+- confidence is 0.0-1.0 for the photo as a whole.
+- Set needs_review true, and say why in reason, when: the image is blurred or
+  dark, devices overlap so you cannot separate them, devices are cut off by the
+  frame, or you see a device type not in the list above.
 - Ignore any people in the photo entirely. Never describe or count them.
 - Never guess. Unsure means needs_review true."""
 
 CONFIDENCE_THRESHOLD = 0.80
 
 
-def _call_model(vision_result: dict) -> str:
+def _hint_from_vision(vision_result: dict | None) -> str:
+    """Vision's detections, framed as the weak signal they actually are.
+
+    Handed over without this framing the model anchors on them and reproduces
+    the exact undercount this rewrite exists to fix — Vision reports the stop
+    sign confidently and stays silent about six other devices, which reads like
+    "there is one device here" unless you say otherwise.
+    """
+    if not vision_result:
+        return ""
+    objects = [o.get("object") for o in vision_result.get("objects", []) if o.get("object")]
+    if not objects:
+        return ""
+    return (
+        "\n\nA generic object detector reported: "
+        + ", ".join(objects)
+        + ". It does not recognise traffic cones, delineators or barricades at all, "
+        "so treat it as a partial hint and never as a limit. The photo is authoritative."
+    )
+
+
+def _extract_json(text: str) -> dict:
+    """Parse the model's reply, tolerating a ```json fence around it.
+
+    JSON mode is requested below, but the fence showed up the moment an image
+    was added to the request, and one stray fence costs a whole inventory.
+    """
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start == -1 or end <= start:
+            raise
+        return json.loads(text[start : end + 1])
+
+
+def _call_model(photo_bytes: bytes, vision_result: dict | None) -> str:
     endpoint = os.environ["FOUNDRY_ENDPOINT"]
     key = os.environ["FOUNDRY_KEY"]
     headers = {"api-key": key, "Content-Type": "application/json"}
+    b64 = base64.b64encode(photo_bytes).decode()
     body = {
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": json.dumps(vision_result)},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Count every traffic-control device in this photo."
+                        + _hint_from_vision(vision_result),
+                    },
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{b64}",
+                            "detail": IMAGE_DETAIL,
+                        },
+                    },
+                ],
+            },
         ],
         "temperature": 0,
         "max_tokens": 400,
+        # Belt and braces with _extract_json above.
+        "response_format": {"type": "json_object"},
     }
-    resp = requests.post(endpoint, headers=headers, json=body, timeout=20)
+    # Vision analysis of a 1080p frame is slower than a JSON round-trip; the old
+    # 20s timeout would have cut real answers off partway.
+    resp = requests.post(endpoint, headers=headers, json=body, timeout=60)
     resp.raise_for_status()
     data = resp.json()
     return data["choices"][0]["message"]["content"]
@@ -79,24 +162,27 @@ def _normalize_devices(raw_devices) -> list[dict]:
     return normalized, flip_needs_review
 
 
-def count_devices(vision_result: dict | None) -> dict:
+def count_devices(photo_bytes: bytes, vision_result: dict | None = None) -> dict:
     """
     Returns {"devices": [...], "confidence", "needs_review", "reason"}.
     Never raises — every failure path returns a valid, safely-flagged dict
     because the count_event row already exists and must survive (api.md §6).
 
-    vision_result=None means Vision itself failed or was skipped: leave the
-    event unanalyzed (caller should NOT call save_detections in that case,
-    just leave analyzed_at NULL so the dashboard shows "pending" not "0").
+    vision_result is optional now. It used to be the ONLY input, so Vision being
+    down meant no count was possible and the event was left unanalyzed; the
+    photo is the input today, so a Vision outage costs a hint and nothing more.
+    devices=None is returned only when the agent itself cannot be reached, and
+    the caller must then skip save_detections so analyzed_at stays NULL and the
+    dashboard shows "pending" rather than a fabricated "0" (api.md §1 rule 2).
     """
-    if vision_result is None:
+    if not photo_bytes:
         return {"devices": None, "confidence": None,
-                "needs_review": False, "reason": "vision unavailable"}
+                "needs_review": False, "reason": "no photo to analyse"}
 
     for attempt in range(2):  # one retry on malformed output
         try:
-            raw = _call_model(vision_result)
-            parsed = json.loads(raw)
+            raw = _call_model(photo_bytes, vision_result)
+            parsed = _extract_json(raw)
 
             devices, flip_needs_review = _normalize_devices(parsed.get("devices", []))
             confidence = float(parsed.get("confidence", 0.0))

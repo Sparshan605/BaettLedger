@@ -144,8 +144,11 @@ def create_event(req: func.HttpRequest) -> func.HttpResponse:
     # existing. On vision failure, deliberately do NOT call save_detections,
     # so analyzed_at stays NULL and the dashboard shows "pending", not "0".
     try:
+        # Vision is a hint now, not the input — the Count Agent reads the JPEG
+        # itself (agent.py). A Vision outage therefore costs a hint and nothing
+        # more, where it used to mean no count at all.
         vision_result = vision.analyze_image(photo_bytes)
-        result = agent.count_devices(vision_result)
+        result = agent.count_devices(photo_bytes, vision_result)
         if result["devices"] is not None:
             db.save_detections(
                 event_id, result["devices"], result["confidence"],
@@ -153,7 +156,7 @@ def create_event(req: func.HttpRequest) -> func.HttpResponse:
             )
             db.run_zone_overview_cross_check(session_id)
         else:
-            logging.warning("Vision unavailable for event %s; leaving unanalyzed", event_id)
+            logging.warning("Count Agent unavailable for event %s; leaving unanalyzed", event_id)
     except Exception as e:
         logging.error("Analysis pipeline failed for event %s: %s", event_id, e)
         # Row and photo already exist with analyzed_at=NULL — recoverable from
