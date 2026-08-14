@@ -79,17 +79,27 @@ def _idle_screen():
     the screen rather than in their head. q is the upload backlog.
     """
     direction = store.next_direction()
-    prompt = "Press: load OUT" if direction == "OUT" else "Press: return IN"
+
+    # After a completed OUT/IN pair the run is over and the dashboard has its
+    # comparison, so say so and hold it there rather than immediately inviting
+    # the next capture. Pressing anyway starts a fresh cycle at OUT — the state
+    # is derived from the sessions, so it is not a mode anyone can get stuck in.
+    if store.cycle_complete():
+        prompt = "Day complete"
+        label = "new run?"
+    else:
+        prompt = "Press: load OUT" if direction == "OUT" else "Press: return IN"
+        label = direction
 
     # OFFLINE is the one thing the crew must be able to see without a phone
     # (proposal §8). last_online is whatever the uploader thread saw on its
     # most recent pass, so this costs nothing to read.
     queued = store.pending_count()
     if uploader.last_online is False:
-        status = f"OFFLINE     q{queued:>2}"
-    else:
-        status = f"{direction:<3}          q{queued:>2}"
-    lcd.show(prompt, status)
+        label = "OFFLINE"
+    # 12 for the label, a space, then "q" and two digits — exactly 16 columns,
+    # so the queue count can never be pushed off the edge or run into the text.
+    lcd.show(prompt, f"{label:<12}"[:12] + f" q{queued:>2}"[:4])
 
 
 def _after_inventory(direction, rows):

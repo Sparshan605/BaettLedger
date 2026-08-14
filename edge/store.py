@@ -112,6 +112,31 @@ def next_direction(db_path=None, today=None):
     return "IN" if outs > ins else "OUT"
 
 
+def cycle_complete(db_path=None, today=None):
+    """True when today's OUT and IN are both done, so the comparison is ready.
+
+    A run is a pair: load the truck (OUT), bring it back (IN). Equal counts of
+    each means the pair is closed and the dashboard has something to reconcile.
+    Derived from the sessions rather than remembered in a variable, so it is
+    still correct after a restart or a power cut mid-demo.
+
+    Pressing the button again simply starts the next OUT, which is what
+    next_direction() already returns at this point.
+    """
+    today = today or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """SELECT
+                 SUM(session_type = 'OUT') AS outs,
+                 SUM(session_type = 'IN')  AS ins
+               FROM session WHERE session_date = ?""",
+            (today,),
+        ).fetchone()
+    outs = row["outs"] or 0
+    ins = row["ins"] or 0
+    return outs > 0 and outs == ins
+
+
 def open_session(db_path=None, session_type=None, now=None):
     """Start a session. Returns its row.
 
