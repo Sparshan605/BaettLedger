@@ -14,10 +14,11 @@ Routes:
   Dashboard-facing:  GET /api/today, GET /api/events, GET /api/review,
                      POST /api/events/{event_id}/confirm
 """
+import decimal
 import json
 import logging
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import azure.functions as func
 
@@ -29,8 +30,29 @@ import agent
 app = func.FunctionApp()
 
 
+def _encode(value):
+    """JSON encoder for the types pyodbc hands back.
+
+    This used to be plain `default=str`, which silently turned SQL DECIMAL into
+    a quoted string: confidence came out as "0.870" instead of 0.87. The
+    dashboard called .toFixed() on it, threw, and rendered a blank page — with
+    the only clue being "h.toFixed is not a function" in the console.
+
+    Numbers stay numbers, timestamps become ISO 8601 in UTC so JavaScript's
+    Date can parse them without relying on non-standard formats.
+    """
+    if isinstance(value, decimal.Decimal):
+        return float(value)
+    if isinstance(value, datetime):
+        stamped = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        return stamped.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
+
+
 def _json(body: dict, status_code: int = 200) -> func.HttpResponse:
-    return func.HttpResponse(json.dumps(body, default=str), status_code=status_code,
+    return func.HttpResponse(json.dumps(body, default=_encode), status_code=status_code,
                               mimetype="application/json")
 
 
@@ -176,7 +198,7 @@ def list_events(req: func.HttpRequest) -> func.HttpResponse:
     session_id = req.params.get("session_id")
     if not session_id:
         return _json({"error": "session_id required"}, 400)
-    return _json({"events": db.get_events(session_id)})
+    return _json({"events": blob.with_photo_links(db.get_events(session_id))})
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +206,7 @@ def list_events(req: func.HttpRequest) -> func.HttpResponse:
 # ---------------------------------------------------------------------------
 @app.route(route="review", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def get_review(req: func.HttpRequest) -> func.HttpResponse:
-    return _json({"events": db.get_review_queue()})
+    return _json({"events": blob.with_photo_links(db.get_review_queue())})
 
 
 # ---------------------------------------------------------------------------
