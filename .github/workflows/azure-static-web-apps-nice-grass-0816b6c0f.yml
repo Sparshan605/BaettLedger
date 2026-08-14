@@ -55,3 +55,10 @@ jobs:
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_NICE_GRASS_0816B6C0F }}
           action: "close"
+          # Unused by `action: "close"` — closing only tears down the PR's
+          # preview environment, it never looks at the source tree. It is here
+          # because the action declares app_location required: true for every
+          # action, so without it every linter reports this job as broken.
+          # Microsoft's own generated template omits it and trips their own
+          # metadata. Inert, so leave it.
+          app_location: "/"
