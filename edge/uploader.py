@@ -44,6 +44,11 @@ MAX_ATTEMPTS = 10
 
 SECONDS_BETWEEN_PASSES = 15
 
+# Whether the last drain pass reached the API. main.py reads this to show
+# OFFLINE on the LCD (proposal §8) without making its own network call every
+# time it redraws. None means no pass has run yet.
+last_online = None
+
 
 def is_online(base_url=None):
     """True if the API answers its health check. Drives the LCD, nothing else."""
@@ -184,7 +189,9 @@ def drain(base_url=None, key=None, limit=None):
         if close_session_remote(session, base_url, key):
             result["closed"] += 1
 
+    global last_online
     result["online"] = result["uploaded"] > 0 or is_online(base_url)
+    last_online = result["online"]
     return result
 
 

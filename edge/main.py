@@ -26,7 +26,7 @@ import sys
 import time
 from pathlib import Path
 
-from edge import DATA_DIR, camera, lcd, store, trigger
+from edge import DATA_DIR, camera, config, lcd, store, trigger, uploader
 
 PHOTO_DIR = DATA_DIR / "photos"
 
@@ -80,7 +80,16 @@ def _idle_screen():
     """
     direction = store.next_direction()
     prompt = "Press: load OUT" if direction == "OUT" else "Press: return IN"
-    lcd.show(prompt, f"{direction:<3}          q{store.pending_count():>2}")
+
+    # OFFLINE is the one thing the crew must be able to see without a phone
+    # (proposal §8). last_online is whatever the uploader thread saw on its
+    # most recent pass, so this costs nothing to read.
+    queued = store.pending_count()
+    if uploader.last_online is False:
+        status = f"OFFLINE     q{queued:>2}"
+    else:
+        status = f"{direction:<3}          q{queued:>2}"
+    lcd.show(prompt, status)
 
 
 def _after_inventory(direction, rows):
@@ -153,6 +162,20 @@ def main(argv=None):
         _after_inventory(session["session_type"], rows)
         lcd.close(blank=False)  # leave the result readable after we exit
         return 0
+
+    # Upload in the background so the dashboard fills in while the demo runs.
+    # Without this the queue only drains when someone runs edge.uploader by
+    # hand, which is fine for testing and useless in front of an audience.
+    #
+    # It is a daemon thread and every pass swallows its own errors, so a dead
+    # network cannot stop the Pi counting — captures still queue and replay
+    # when the connection comes back (proposal §8).
+    uploader_thread = None
+    if config.is_configured():
+        uploader_thread, _ = uploader.start()
+        print("uploader running in the background")
+    else:
+        print("no API_URL/DEVICE_KEY — capturing offline, nothing will upload")
 
     print("waiting for presses. Ctrl+C to stop.")
     try:
