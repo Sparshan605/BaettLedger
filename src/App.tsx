@@ -23,13 +23,18 @@ export default function App() {
   const activeSession = tab === "OUT" ? today.data?.out_session ?? null : today.data?.in_session ?? null;
   const { events, setEvents, loading: eventsLoading } = useEvents(activeSession?.session_id ?? null);
 
+  // The shell below is max-w-5xl, not 3xl. Two photos per session leaves a short
+  // list, and in a 768px column on a monitor the whole screen read as a small
+  // box floating in the dark with its right edge cut off. It is also going on a
+  // projector on the 19th, where bigger is strictly better.
+
   function handleConfirmed(updated: CountEvent) {
     setEvents((prev) => prev.map((e) => (e.event_id === updated.event_id ? updated : e)));
     setReviewing(null);
   }
 
   return (
-    <div className="mx-auto min-h-screen max-w-3xl px-4 py-8">
+    <div className="mx-auto min-h-screen max-w-5xl px-4 py-8 sm:px-6">
       <header className="mb-8 flex items-center justify-between">
         <div className="flex items-center gap-2.5">
           <span className="h-2.5 w-2.5 rounded-full bg-accent" />
