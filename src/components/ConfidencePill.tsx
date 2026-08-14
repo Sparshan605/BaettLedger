@@ -4,7 +4,7 @@ import type { CountEvent } from "../types";
 // The 0.80 threshold is applied server-side, in Python, not here (docs/api.md
 // §6: "the threshold is a rule and belongs where you can see it"). The
 // dashboard just trusts needs_review — which also catches cases confidence
-// alone wouldn't, like an unapproved device type or a zone/overview mismatch.
+// alone wouldn't, like an unapproved device type or a wide/close-up mismatch.
 export function ConfidencePill({ event }: { event: CountEvent }) {
   if (event.analyzed_at === null) {
     return <span className="font-mono text-sm text-text-muted">pending</span>;

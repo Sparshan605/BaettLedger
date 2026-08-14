@@ -146,15 +146,39 @@ def open_session(db_path=None, session_type=None, now=None):
     now = now or utc_now()
     session_date = now[:10]
     session_type = session_type or next_direction(db_path, today=session_date)
-    session_id = f"sess-{session_date}-{now[11:13]}{now[14:16]}"
+
+    # Seconds, not just HH:MM. The id used to stop at the minute, so two presses
+    # inside the same minute produced the SAME session_id — and INSERT OR IGNORE
+    # then silently handed back the FIRST session, direction included. On Aug 14
+    # a fresh OUT press 13 seconds after an IN was filed as sequences 5-8 of that
+    # IN session, so the dashboard's OUT tab kept showing the previous run's
+    # photos while IN showed both captures. Two presses cannot share a second:
+    # the countdown alone is three.
+    base = f"sess-{session_date}-{now[11:13]}{now[14:16]}{now[17:19]}"
 
     with _connect(db_path) as conn:
-        conn.execute(
-            """INSERT OR IGNORE INTO session
-                 (session_id, device_id, session_type, session_date, opened_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (session_id, DEVICE_ID, session_type, session_date, now),
-        )
+        # Same second AND same direction is a retry of one press, so reusing the
+        # row is right — that is what keeps the upload idempotency key stable.
+        # Same second but a different direction is a genuine collision, and
+        # silently absorbing it is the bug above; take the next id instead.
+        session_id, suffix = base, 1
+        while True:
+            existing = conn.execute(
+                "SELECT session_type FROM session WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            if existing is None:
+                conn.execute(
+                    """INSERT INTO session
+                         (session_id, device_id, session_type, session_date, opened_at)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (session_id, DEVICE_ID, session_type, session_date, now),
+                )
+                break
+            if existing["session_type"] == session_type:
+                break
+            suffix += 1
+            session_id = f"{base}-{suffix}"
+
         return dict(conn.execute(
             "SELECT * FROM session WHERE session_id = ?", (session_id,)
         ).fetchone())
@@ -341,7 +365,7 @@ if __name__ == "__main__":
     print("\nOUT session, one inventory")
     s1 = open_session(tmp, now="2026-08-19T08:15:00Z")
     check("session_type", s1["session_type"], "OUT")
-    check("session_id format", s1["session_id"], "sess-2026-08-19-0815")
+    check("session_id format", s1["session_id"], "sess-2026-08-19-081500")
 
     frames = [("left", "/tmp/a_left.jpg"), ("middle", "/tmp/a_middle.jpg"),
               ("right", "/tmp/a_right.jpg"), ("overview", "/tmp/a.jpg")]
@@ -406,6 +430,23 @@ if __name__ == "__main__":
           add_inventory(s2["session_id"], frames, tmp)[0]["sequence"], 1)
     close_session(s2["session_id"], tmp)
     check("after OUT and IN, next is OUT", next_direction(tmp, today="2026-08-19"), "OUT")
+
+    print("\ntwo presses in the same second (the OUT-filed-as-IN bug)")
+    # Same timestamp as the IN above, but the direction is now OUT. The old
+    # minute-granularity id collided here and returned the IN session, so the
+    # capture landed in the wrong direction and the dashboard's OUT tab went
+    # stale. It must come back as a separate OUT session instead.
+    s3 = open_session(tmp, now="2026-08-19T16:30:00Z")
+    check("collision does not reuse the IN session", s3["session_id"] != s2["session_id"], True)
+    check("direction is the one that was asked for", s3["session_type"], "OUT")
+    check("its sequences start at 1",
+          add_inventory(s3["session_id"], frames, tmp)[0]["sequence"], 1)
+    check("the IN session kept its own four", session_totals(s2["session_id"], tmp)["captured"], 4)
+    close_session(s3["session_id"], tmp)
+
+    print("\nre-opening the same press is still idempotent")
+    again = open_session(tmp, "OUT", now="2026-08-19T16:30:00Z")
+    check("same second, same direction reuses the row", again["session_id"], s3["session_id"])
 
     print("\na different day starts fresh")
     check("tomorrow is OUT", next_direction(tmp, today="2026-08-20"), "OUT")

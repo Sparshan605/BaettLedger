@@ -25,7 +25,7 @@ function InventoryTile({
       </div>
       {isOpen && value === 0 ? (
         <div className="mt-4 text-base font-medium text-text-muted">
-          Session open — waiting for first device.
+          Session open — waiting for the first photo.
         </div>
       ) : (
         <div className="mt-1 font-mono text-6xl font-semibold tabular-nums text-ink">

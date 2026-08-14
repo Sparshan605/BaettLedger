@@ -14,7 +14,7 @@ from pathlib import Path
 
 from picamera2 import Picamera2
 
-from edge import OVERVIEW_ZONE, ZONES
+from edge import CHECK_ZONE, COUNT_ZONE
 
 # Seconds to let auto-exposure and auto-white-balance settle after the sensor
 # starts. Only paid once, on the first capture. The tailgate is dim and photos
@@ -64,20 +64,30 @@ def get_frame(path):
     return path
 
 
-def split_zones(path, out_dir=None):
-    """Cut one capture into the four images an inventory uploads.
+# How much of the frame the close-up keeps, per side. 0.8 trims the outer 10%
+# off every edge: enough to lose the tailgate rails and whatever is on the
+# ground behind the truck, not so much that a cone at the end of the row falls
+# outside it.
+#
+# This is the number to change at the demo if the cross-check keeps firing. The
+# close-up must still contain the ENTIRE load — it is meant to see the same
+# devices as the wide shot through a tighter frame, so that a disagreement means
+# something real. Crop past the load and it will always read low, and every
+# session gets flagged for a mismatch that is really just the crop.
+CLOSEUP_SCALE = 0.8
 
-    Returns [(zone, Path), ...] for left, middle, right, overview — the three
-    thirds of the frame, then the untouched original.
 
-    Cropping rather than aiming is the whole point: thirds of one image cannot
-    overlap, so the zone sum is valid by construction. Aiming the camera three
-    times by hand cannot promise that, and an accidental overlap inflates the
-    count silently.
+def split_capture(path, out_dir=None):
+    """Cut one capture into the two images an inventory uploads.
 
-    The overview entry is the original file, not a copy. It covers the same
-    devices as the three zones, so the backend counts it independently as a
-    cross-check and never adds it to the total (docs/api.md §6a).
+    Returns [(zone, Path), ...]: the untouched frame as `wide`, then a centre
+    crop of it as `closeup`.
+
+    The wide entry is the original file, not a copy. It is the only image that
+    sees the whole load, so it is the one the backend counts. The close-up is
+    the same load through a tighter frame, counted independently and never added
+    to the total — two estimates that disagree flag the session for a human
+    rather than being silently averaged (docs/api.md §6a).
     """
     from PIL import Image
 
@@ -87,17 +97,20 @@ def split_zones(path, out_dir=None):
 
     with Image.open(path) as im:
         width, height = im.size
-        # Integer thirds, with the last zone taking any remainder so the three
-        # crops tile the frame exactly — no gap, no overlap, nothing dropped.
-        edges = [0, width // 3, (width * 2) // 3, width]
-        frames = []
-        for zone, left, right in zip(ZONES, edges, edges[1:]):
-            crop_path = out_dir / f"{path.stem}_{zone}.jpg"
-            im.crop((left, 0, right, height)).save(crop_path, "JPEG", quality=90)
-            frames.append((zone, crop_path))
+        # Size the crop first, then centre it. Deriving the margin instead
+        # (int(width * (1 - SCALE) / 2)) reads fine and is wrong: 1 - 0.8 is
+        # 0.199999... in binary, which truncates a pixel low on each side and
+        # quietly hands back 1538x866 where 1536x864 was asked for.
+        crop_w = round(width * CLOSEUP_SCALE)
+        crop_h = round(height * CLOSEUP_SCALE)
+        left = (width - crop_w) // 2
+        top = (height - crop_h) // 2
+        crop_path = out_dir / f"{path.stem}_{CHECK_ZONE}.jpg"
+        im.crop((left, top, left + crop_w, top + crop_h)).save(
+            crop_path, "JPEG", quality=90
+        )
 
-    frames.append((OVERVIEW_ZONE, path))
-    return frames
+    return [(COUNT_ZONE, path), (CHECK_ZONE, crop_path)]
 
 
 def exposure_info():
@@ -176,32 +189,41 @@ if __name__ == "__main__":
         print(f"FAIL — frame is a flat field (stddev {stddev:.1f}). Lit, but nothing in view.")
         sys.exit(1)
 
-    # The four images an inventory actually uploads.
+    # The two images an inventory actually uploads.
     from PIL import Image
 
-    frames = split_zones(out)
-    print("  zones:")
-    total_width = 0
+    frames = split_capture(out)
+    print("  captures:")
+    sizes = {}
     for zone, frame_path in frames:
         with Image.open(frame_path) as im:
-            w, h = im.size
+            sizes[zone] = im.size
+        w, h = sizes[zone]
         kb = frame_path.stat().st_size / 1024
-        print(f"    {zone:<9} {w:>5}x{h:<5} {kb:>6.0f} KB  {frame_path.name}")
-        if zone != OVERVIEW_ZONE:
-            total_width += w
+        role = "counted" if zone == COUNT_ZONE else "cross-check"
+        print(f"    {zone:<9} {w:>5}x{h:<5} {kb:>6.0f} KB  {role:<11} {frame_path.name}")
     print()
 
     with Image.open(out) as im:
         full_width, full_height = im.size
 
-    if len(frames) != len(ZONES) + 1:
-        print(f"FAIL — expected {len(ZONES) + 1} frames, got {len(frames)}.")
+    if len(frames) != 2:
+        print(f"FAIL — expected 2 frames, got {len(frames)}.")
         sys.exit(1)
 
-    if total_width != full_width:
-        print(f"FAIL — zone widths sum to {total_width}, frame is {full_width}.")
-        print("       The crops must tile the frame exactly: no gap, no overlap.")
+    if sizes[COUNT_ZONE] != (full_width, full_height):
+        print(f"FAIL — {COUNT_ZONE} is {sizes[COUNT_ZONE]}, not the full {full_width}x{full_height}.")
+        print("       The counted image must be the uncropped frame — it is the only")
+        print("       one that sees the whole load.")
         sys.exit(1)
 
-    print(f"  crops tile the frame exactly: {total_width}px = {full_width}px, no overlap")
+    crop_w, crop_h = sizes[CHECK_ZONE]
+    if not (0 < crop_w < full_width and 0 < crop_h < full_height):
+        print(f"FAIL — {CHECK_ZONE} is {crop_w}x{crop_h}, not a crop of {full_width}x{full_height}.")
+        sys.exit(1)
+
+    print(f"  {COUNT_ZONE} is the full frame; {CHECK_ZONE} keeps the middle "
+          f"{CLOSEUP_SCALE:.0%} ({crop_w}x{crop_h})")
     print("\nPASS — camera works, the frame has a real scene, and it splits cleanly.")
+    print("\nLook at both files before the demo. The close-up must still contain the")
+    print(f"WHOLE load — if it clips devices, raise CLOSEUP_SCALE above {CLOSEUP_SCALE}.")

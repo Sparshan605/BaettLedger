@@ -19,8 +19,8 @@ camera twice, and picamera2 reports that as a device-busy error that looks like
 a wiring fault.
 
 There is no sensor.py. The original design had devices breaking an ultrasonic
-beam one at a time; we now photograph the loaded truck bed in fixed zones
-instead, so there is no beam to break and the dead HC-SR04 blocks nothing.
+beam one at a time; we now photograph the loaded truck bed in one shot instead,
+so there is no beam to break and the dead HC-SR04 blocks nothing.
 """
 
 __version__ = "0.1.0"
@@ -40,15 +40,27 @@ DEVICE_ID = "baettledger-01"
 # these plus "unknown". Kept here so the Pi and the docs cannot drift.
 DEVICE_TYPES = ("cone", "sign", "barricade", "delineator")
 
-# One inventory = these captures, in this order. The three zones must not
-# overlap, because the backend SUMS them — photograph distinct areas of the bed,
-# not the same pile from three angles, or four cones become twelve.
-ZONES = ("left", "middle", "right")
+# One inventory = two photos of one capture, in this order.
+#
+# WIDE is the frame exactly as the sensor saw it, and it is the one that counts:
+# it is the only image that sees the whole load, so the inventory total is its
+# number alone.
+COUNT_ZONE = "wide"
 
-# A wide shot of the whole load, counted independently and NOT added to the sum.
-# It exists to catch a missed zone or an accidental overlap: if it disagrees
-# with the zone total by more than a device or two, the inventory is flagged for
-# human confirmation rather than trusted silently.
-OVERVIEW_ZONE = "overview"
+# CLOSEUP is that same frame with the outer margin trimmed off — the load
+# without the tailgate edges or the background behind it. It is counted
+# independently and NEVER added to the total. Its entire job is to be a second
+# opinion: if it and the wide shot disagree by more than a device or two, then
+# something outside the load is being counted or something inside it is being
+# missed, and the inventory gets flagged for a human instead of trusted.
+CHECK_ZONE = "closeup"
 
-CAPTURE_SEQUENCE = ZONES + (OVERVIEW_ZONE,)
+CAPTURE_SEQUENCE = (COUNT_ZONE, CHECK_ZONE)
+
+# This replaced a left/middle/right split plus an overview. Thirds tiled the
+# frame exactly, which made the sum valid by construction — but a device
+# straddling a boundary was sliced in half in two crops, and every press put
+# four photos through Vision. Two photos halves the demo wait and never cuts a
+# device in half. The names below are the retired ones; the backend still
+# accepts them so the sessions already in the database keep totalling correctly.
+LEGACY_ZONES = ("left", "middle", "right", "overview")

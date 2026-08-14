@@ -2,9 +2,9 @@
 The loop. Press the button, get an inventory.
 
 This is the offline milestone: it needs no internet, no Azure and no partner
-code. One press captures the truck bed, splits it into three non-overlapping
-zones plus an overview, queues all four for upload, and shows the result on the
-LCD. uploader.py drains that queue later, whenever there is a network.
+code. One press captures the truck bed as a wide shot plus a close-up of the
+same frame, queues both for upload, and shows the result on the LCD.
+uploader.py drains that queue later, whenever there is a network.
 
     idle    |BaettLedger     |
             |Ready: OUT    q0|      q0 = nothing waiting to upload
@@ -13,7 +13,7 @@ LCD. uploader.py drains that queue later, whenever there is a network.
             |Hold steady     |      time to aim and get your hand out of frame
 
     capture |OUT captured    |
-            |4 photos queued |
+            |2 photos queued |
 
 Direction is not asked for. store.next_direction() reads the day's history: the
 morning inventory is OUT, the evening one IN.
@@ -60,7 +60,7 @@ def run_inventory(countdown=COUNTDOWN_SECONDS):
 
     lcd.show(f"{direction} capturing", "")
     path = camera.get_frame(_photo_path(session["session_id"]))
-    frames = camera.split_zones(path)
+    frames = camera.split_capture(path)
 
     # Queue before anything else can go wrong. Once these rows are committed
     # the photos are safe even if the Pi loses power on the next line.

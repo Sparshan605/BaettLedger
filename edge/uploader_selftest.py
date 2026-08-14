@@ -21,7 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from edge import store, uploader  # noqa: E402
+from edge import CAPTURE_SEQUENCE, store, uploader  # noqa: E402
 
 KEY = "test-key-123"
 
@@ -119,14 +119,16 @@ def main():
     store.DB_PATH = db  # point the whole module at a scratch database
     store.init(db)
 
-    # Four photos, as one inventory would produce.
+    # An inventory is two photos, so queue two of them: four events, which is
+    # what the partial-failure cases below need to split into halves.
     photos = []
-    for zone in ("left", "middle", "right", "overview"):
+    for zone in CAPTURE_SEQUENCE:
         p = tmp / f"shot_{zone}.jpg"
         p.write_bytes(b"\xff\xd8\xff" + b"x" * 2000)  # not a real JPEG, but real bytes
         photos.append((zone, p))
 
     session = store.open_session(db, now="2026-08-19T08:15:00Z")
+    store.add_inventory(session["session_id"], photos, db)
     store.add_inventory(session["session_id"], photos, db)
     store.close_session(session["session_id"], db)
     check("queued before upload", store.pending_count(db), 4)
@@ -180,7 +182,7 @@ def main():
     print("\nmissing photo file")
     with store._connect(db) as c:
         c.execute("INSERT INTO event (session_id, sequence, zone, photo_path, captured_at)"
-                  " VALUES (?, 77, 'left', '/tmp/does_not_exist.jpg', ?)",
+                  " VALUES (?, 77, 'wide', '/tmp/does_not_exist.jpg', ?)",
                   (session["session_id"], store.utc_now()))
     result = uploader.drain(base, KEY)
     check("counted as failed, not crashed", result["failed"], 1)

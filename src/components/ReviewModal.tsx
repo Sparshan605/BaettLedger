@@ -1,7 +1,13 @@
 import { useState } from "react";
 import { confirmEvent } from "../api/client";
 import { formatConfidence } from "../lib/format";
-import { DEVICE_TYPES, type CountEvent, type DeviceDetection, type DeviceType } from "../types";
+import {
+  DEVICE_TYPES,
+  isCheckZone,
+  type CountEvent,
+  type DeviceDetection,
+  type DeviceType,
+} from "../types";
 
 interface ReviewModalProps {
   event: CountEvent;
@@ -53,8 +59,18 @@ export function ReviewModal({ event, onCancel, onConfirmed }: ReviewModalProps) 
         />
 
         <p className="font-mono text-xs font-semibold uppercase tracking-wider text-accent">
-          Zone: {event.zone}
+          {event.zone} — {isCheckZone(event.zone) ? "cross-check" : "counted"}
         </p>
+        {/* Correcting a cross-check photo does NOT move the headline number, and
+            nothing else on this screen says so. Someone fixing it on stage and
+            watching the total sit still would reasonably conclude the whole
+            confirm flow is broken. */}
+        {isCheckZone(event.zone) && (
+          <p className="mt-1 text-sm text-warning">
+            This photo is a second opinion, not the count. Correcting it will not change the
+            inventory total.
+          </p>
+        )}
         <p className="mt-1 text-sm text-text">
           {event.confidence !== null ? (
             <span className="font-mono text-text-muted">

@@ -3,17 +3,38 @@ Database access for BaettLedger — v2, zone-based architecture.
 Connection string comes from the SQL_CONNECTION_STRING app setting
 (itself a Key Vault reference — see azure-setup.md §3).
 
-The beam sensor is gone. A session now produces four photos (left, middle,
-right, overview); each photo can show several device types at once, stored
-as one count_detection row per type. See docs/api.md §1-2 for the full
-rationale before touching this file.
+The beam sensor is gone. A session now produces two photos of one capture:
+`wide` (the whole load, uncropped — this is the count) and `closeup` (the same
+load through a tighter frame — an independent second opinion, never added to
+the total). Each photo can show several device types at once, stored as one
+count_detection row per type. See docs/api.md §1-2 for the full rationale
+before touching this file.
+
+This replaced a left/middle/right/overview split on Aug 13. Rows from that
+design are still in the table and still total correctly — see COUNT_ZONES.
 """
 import os
 import pyodbc
 from datetime import datetime, timezone
 
 APPROVED_DEVICE_TYPES = {"cone", "sign", "barricade", "delineator"}
-APPROVED_ZONES = {"left", "middle", "right", "overview"}
+
+# An inventory is two photos: `wide` is the uncropped frame and carries the
+# count, `closeup` is the same load through a tighter frame and is only ever a
+# second opinion. left/middle/right/overview are the retired three-zone design;
+# they stay approved so the sessions already in the database keep working and an
+# un-updated Pi is not rejected mid-demo.
+COUNT_ZONES = {"wide", "left", "middle", "right"}
+CHECK_ZONES = {"closeup", "overview"}
+APPROVED_ZONES = COUNT_ZONES | CHECK_ZONES
+
+# Interpolated into SQL below. Safe — these are module constants, never input —
+# and having them in one place is what stops the two halves of a reconciliation
+# query drifting apart, which is exactly how the overview once leaked into a
+# total and doubled every number on the dashboard.
+_COUNTED_SQL = "e.zone NOT IN ('closeup','overview')"
+_CHECK_SQL = "e.zone IN ('closeup','overview')"
+
 ZONE_OVERVIEW_DIFF_THRESHOLD = 2  # api.md §6a
 
 
@@ -159,12 +180,16 @@ def confirm_event(event_id, devices, confirmed_by="operator"):
 
 def get_session_zone_totals(session_id):
     """
-    Sums count_detection per device_type for the three real zones (excludes
-    overview) versus the overview photo alone, for one session. Used by the
-    zone/overview cross-check (api.md §6a) once all four captures are analyzed.
+    Sums count_detection per device_type for the counted photo(s) versus the
+    cross-check photo alone, for one session. Used by the cross-check
+    (api.md §6a) once every capture in the session has been analyzed.
 
-    Returns (zone_totals: {device_type: count}, overview_totals: {device_type: count},
-             overview_event_id: int|None, all_analyzed: bool)
+    Today that is `wide` against `closeup`; for sessions captured under the old
+    design it is left+middle+right against `overview`. Both are handled by the
+    same query, which is why the zone lists live in one constant.
+
+    Returns (zone_totals, overview_totals, event_ids, all_analyzed) where
+    event_ids is {"counted": [id, ...], "check": int|None}.
     """
     with get_connection() as conn:
         cur = conn.cursor()
@@ -178,26 +203,37 @@ def get_session_zone_totals(session_id):
         all_analyzed = total_rows > 0 and total_rows == (analyzed_rows or 0)
 
         cur.execute(
-            """SELECT d.device_type, SUM(d.count)
+            f"""SELECT d.device_type, SUM(d.count)
                FROM count_detection d JOIN count_event e ON e.event_id = d.event_id
-               WHERE e.session_id = ? AND e.zone <> 'overview'
+               WHERE e.session_id = ? AND {_COUNTED_SQL}
                GROUP BY d.device_type""",
             session_id,
         )
         zone_totals = {row[0]: row[1] for row in cur.fetchall()}
 
         cur.execute(
-            """SELECT e.event_id, d.device_type, SUM(d.count)
+            f"""SELECT e.event_id, d.device_type, SUM(d.count)
                FROM count_detection d JOIN count_event e ON e.event_id = d.event_id
-               WHERE e.session_id = ? AND e.zone = 'overview'
+               WHERE e.session_id = ? AND {_CHECK_SQL}
                GROUP BY e.event_id, d.device_type""",
             session_id,
         )
         overview_rows = cur.fetchall()
         overview_totals = {row[1]: row[2] for row in overview_rows}
-        overview_event_id = overview_rows[0][0] if overview_rows else None
 
-        return zone_totals, overview_totals, overview_event_id, all_analyzed
+        # Every counted photo in the session, whether or not it has detections —
+        # a zone that came back empty is still a row a human may need to correct.
+        cur.execute(
+            f"SELECT e.event_id FROM count_event e WHERE e.session_id = ? AND {_COUNTED_SQL}"
+            " ORDER BY e.sequence",
+            session_id,
+        )
+        event_ids = {
+            "counted": [row[0] for row in cur.fetchall()],
+            "check": overview_rows[0][0] if overview_rows else None,
+        }
+
+        return zone_totals, overview_totals, event_ids, all_analyzed
 
 
 def flag_overview_mismatch(event_id, reason):
@@ -213,13 +249,17 @@ def flag_overview_mismatch(event_id, reason):
 def run_zone_overview_cross_check(session_id):
     """
     api.md §6a. Call this after saving detections for any event in a session.
-    No-ops until all four captures in the session have been analyzed. Flags
-    the overview event (not the zones) when zone_total and overview_total
-    disagree by more than ZONE_OVERVIEW_DIFF_THRESHOLD for any device type.
-    Does NOT auto-correct anything — it only flags for a human to look.
+    No-ops until every capture in the session has been analyzed. Flags the
+    cross-check event (never the counted one) when the two totals disagree by
+    more than ZONE_OVERVIEW_DIFF_THRESHOLD for any device type.
+
+    Does NOT auto-correct anything — it only flags for a human to look. The
+    close-up is a sanity check, not a better measurement: it sees a tighter
+    frame, so when they differ the wide shot is still the one that counted
+    everything.
     """
-    zone_totals, overview_totals, overview_event_id, all_analyzed = get_session_zone_totals(session_id)
-    if not all_analyzed or overview_event_id is None:
+    zone_totals, overview_totals, event_ids, all_analyzed = get_session_zone_totals(session_id)
+    if not all_analyzed or event_ids["check"] is None:
         return
 
     all_types = set(zone_totals) | set(overview_totals)
@@ -228,17 +268,33 @@ def run_zone_overview_cross_check(session_id):
         z = zone_totals.get(device_type, 0)
         o = overview_totals.get(device_type, 0)
         if abs(z - o) > ZONE_OVERVIEW_DIFF_THRESHOLD:
-            mismatches.append(f"zones total {z} {device_type}, overview shows {o}")
+            mismatches.append(f"counted {z} {device_type}, cross-check shows {o}")
 
-    if mismatches:
-        flag_overview_mismatch(overview_event_id, "; ".join(mismatches))
+    if not mismatches:
+        return
+
+    # Flag the COUNTED photo, not the cross-check one.
+    #
+    # The old design flagged the overview, which was defensible when the
+    # overview was the odd one out among four rows. With two photos it is
+    # actively wrong: the operator taps the amber row, corrects the numbers, and
+    # the headline total does not move — because the row they just fixed is the
+    # one that was never in the total. The number on screen stays wrong and the
+    # human check appears to do nothing, which is the worst possible thing to
+    # demonstrate. Blame the row whose correction actually fixes the total.
+    #
+    # A legacy session has three counted rows and no way to tell which is at
+    # fault, so those keep flagging the overview as before.
+    counted = event_ids["counted"]
+    target = counted[0] if len(counted) == 1 else event_ids["check"]
+    flag_overview_mismatch(target, "; ".join(mismatches))
 
 
 def get_today(date_str):
     """
-    Powers GET /api/today. Headline numbers are the three zones summed per
-    api.md §2 — the overview is excluded everywhere (it would roughly double
-    every number, api.md §5).
+    Powers GET /api/today. Headline numbers come from the counted photo per
+    api.md §2 — the cross-check photo is excluded everywhere, because it shows
+    the same devices and would roughly double every number (api.md §5).
     """
     with get_connection() as conn:
         cur = conn.cursor()
@@ -270,10 +326,11 @@ def get_today(date_str):
         out_id = out_session["session_id"] if out_session else None
         in_id = in_session["session_id"] if in_session else None
 
-        # Reconciliation query, verbatim from api.md §5 — count_detection joined
-        # through count_event, overview excluded from both halves.
+        # Reconciliation query, from api.md §5 — count_detection joined through
+        # count_event, the cross-check photo excluded from BOTH halves. Leave it
+        # in one half and the day's difference is pure fiction.
         cur.execute(
-            """
+            f"""
             SELECT
                 COALESCE(o.device_type, i.device_type) AS device_type,
                 COALESCE(o.total, 0) AS out_total,
@@ -284,14 +341,14 @@ def get_today(date_str):
                  FROM count_detection d
                  JOIN count_event e ON e.event_id = d.event_id
                  WHERE e.session_id = ?
-                   AND e.zone <> 'overview'
+                   AND {_COUNTED_SQL}
                  GROUP BY d.device_type) o
             FULL OUTER JOIN
                 (SELECT d.device_type, SUM(d.count) AS total
                  FROM count_detection d
                  JOIN count_event e ON e.event_id = d.event_id
                  WHERE e.session_id = ?
-                   AND e.zone <> 'overview'
+                   AND {_COUNTED_SQL}
                  GROUP BY d.device_type) i
               ON o.device_type = i.device_type
             """,

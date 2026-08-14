@@ -43,9 +43,16 @@ Tell Sparshan the moment it is live. He is blocked until then.
 device. The Pi *knew* the count and Vision only labelled it, so a total Vision outage still left
 a correct number on the dashboard.
 
-**New design:** the Pi photographs the loaded truck bed in **three fixed, non-overlapping zones**
-(left, middle, right) plus one **overview** shot of the whole load. The count comes out of the
-photos. The Pi no longer knows how many cones there are.
+**New design:** the Pi photographs the loaded truck bed **once** and sends two images of that one
+capture: **`wide`**, the uncropped frame, and **`closeup`**, the same load with the outer margin
+trimmed off. The count comes out of the photos. The Pi no longer knows how many cones there are.
+
+> **Changed Aug 13 (second revision).** This replaced a three-zone split — `left`, `middle`,
+> `right` summed together, plus an `overview` cross-check. Thirds tiled the frame exactly, so the
+> sum was valid by construction, but a device straddling a boundary got sliced in half in two
+> crops and every press put four photos through Vision. Two photos halve the wait and never cut a
+> device in half. **The old zone names are still accepted and still total correctly** — sessions
+> captured before the change are in the database and must keep rendering.
 
 **So the old rule — "a Vision failure cannot change the count" — is no longer true, and nothing
 you write can make it true again.** Do not design as if it still holds.
@@ -58,33 +65,35 @@ produce a number quietly.**
 Three things follow, and all three are your responsibility:
 
 1. **Write the photo and the row before analysing anything.** If Vision dies, the inventory is
-   still recoverable by a human looking at four photos. Evidence first, always.
+   still recoverable by a human looking at the photos. Evidence first, always.
 2. **An unanalysed inventory shows as pending or needs-review — never as a total.** A session
    with a failed Vision call must not render as "0 cones". Zero and unknown are different, and
    confusing them in front of guests is worse than showing nothing.
-3. **Cross-check the zones against the overview** (§6a). Two independent estimates that disagree
-   means something is wrong, and a human should look.
+3. **Cross-check the wide shot against the close-up** (§6a). Two independent estimates that
+   disagree means something is wrong, and a human should look.
 
 ---
 
 ## 2. How one truckload becomes a number
 
-1. The operator presses the button four times, once per zone, aiming at LEFT, MIDDLE, RIGHT,
-   then the whole load. The Pi photographs each and queues them locally.
-2. The Pi `POST`s each photo + metadata to `/api/events`, tagged with its `zone`.
+1. The operator presses the button **once**, aiming at the whole load. The Pi takes one photo,
+   derives the close-up crop from it, and queues both locally.
+2. The Pi `POST`s each photo + metadata to `/api/events`, tagged with its `zone` — `wide` first,
+   then `closeup`.
 3. You check the device key, write the JPEG to Blob, and **insert the `count_event` row
    immediately**, with `analyzed_at = NULL` and no detections yet. Return `201`.
 4. You send the photo to Azure AI Vision → objects and tags.
 5. You send those to the Count Agent → `{device_type, count, confidence, needs_review, reason}`.
    Unlike the old design, `count` here is usually more than 1 — it is how many devices are in
-   that zone.
+   that photo.
 6. You update the row. If `confidence < 0.80`, set `needs_review = 1`.
-7. When all four captures for a session have been analysed, compare the zone sum against the
-   overview (§6a) and flag the session if they disagree.
+7. When both captures for a session have been analysed, compare the two (§6a) and flag the
+   session if they disagree.
 8. The dashboard reads it.
 
-**The inventory total is `SUM(count)` over the three zones only.** The overview is never added —
-it covers the same devices, so including it would roughly double every number.
+**The inventory total is `SUM(count)` over the counted photo only** — `wide`, or `left`+`middle`+
+`right` for a legacy session. The cross-check photo (`closeup`, or `overview`) is never added: it
+covers the same devices, so including it would roughly double every number.
 
 ---
 
@@ -114,16 +123,22 @@ All Pi requests send `x-device-key: <DEVICE_KEY>`. Missing or wrong → `401`.
 - `photo` — the JPEG
 
 ```json
-{ "device_id": "baettledger-01", "session_id": "sess-2026-08-19-0815",
-  "sequence": 3, "zone": "right", "captured_at": "2026-08-19T08:17:22Z" }
+{ "device_id": "baettledger-01", "session_id": "sess-2026-08-19-081500",
+  "sequence": 1, "zone": "wide", "captured_at": "2026-08-19T08:17:22Z" }
 ```
 → `201 {"event_id": 42, "status": "accepted"}`
 
-`zone` is one of `left`, `middle`, `right`, `overview`. **Reject anything else with `400`** —
-a typo'd zone would silently drop out of the sum and undercount the whole inventory.
+`zone` is `wide` or `closeup` — or one of the retired `left`, `middle`, `right`, `overview`,
+which stay accepted so an un-updated Pi is not rejected mid-demo. **Reject anything else with
+`400`** — a typo'd zone would silently drop out of the sum and undercount the whole inventory.
 
-`sequence` is the capture index within the session, 1–4. It still forms the idempotency key
+`sequence` is the capture index within the session, 1–2. It still forms the idempotency key
 with `device_id` and `session_id` (§4); nothing about duplicate handling changes.
+
+> `session_id` carries **seconds**, not just `HH:MM`. It used to stop at the minute, and two
+> presses inside one minute then collided on the same id — the second inventory was silently
+> appended to the first session, direction and all, so an OUT capture was filed as sequences
+> 5–8 of the preceding IN. Do not assume one session means one capture; assume the id is opaque.
 
 #### `POST /api/sessions/{session_id}/close`
 ```json
@@ -198,7 +213,8 @@ CREATE TABLE count_event (
     device_id    NVARCHAR(64) NOT NULL,
     sequence     INT          NOT NULL,
     zone         NVARCHAR(10) NOT NULL
-        CHECK (zone IN ('left','middle','right','overview')),
+        CONSTRAINT ck_event_zone CHECK
+            (zone IN ('wide','closeup','left','middle','right','overview')),
     captured_at  DATETIME2    NOT NULL,   -- Pi clock
     received_at  DATETIME2    NOT NULL DEFAULT SYSUTCDATETIME(),  -- server clock, trust this one
     photo_url    NVARCHAR(400) NULL,
@@ -262,7 +278,7 @@ FROM
      JOIN count_event e ON e.event_id = d.event_id
      JOIN session s     ON s.session_id = e.session_id
      WHERE s.session_date = @date AND s.session_type = 'OUT'
-       AND e.zone <> 'overview'
+       AND e.zone NOT IN ('closeup','overview')
      GROUP BY d.device_type) o
 FULL OUTER JOIN
     (SELECT d.device_type, SUM(d.count) AS total
@@ -270,16 +286,17 @@ FULL OUTER JOIN
      JOIN count_event e ON e.event_id = d.event_id
      JOIN session s     ON s.session_id = e.session_id
      WHERE s.session_date = @date AND s.session_type = 'IN'
-       AND e.zone <> 'overview'
+       AND e.zone NOT IN ('closeup','overview')
      GROUP BY d.device_type) i
   ON o.device_type = i.device_type;
 ```
 
 Two things that are easy to get wrong here:
 
-**`e.zone <> 'overview'` in both halves.** The overview photographs the same devices as the
-three zones. Leave it in the sum and every number roughly doubles — and it doubles *plausibly*,
-so nobody notices until the OUT/IN difference stops making sense.
+**The cross-check photo excluded in both halves.** The close-up photographs the same devices as
+the wide shot (as the overview did the three zones). Leave it in the sum and every number roughly
+doubles — and it doubles *plausibly*, so nobody notices until the OUT/IN difference stops making
+sense. Exclude both names, not just the current one, or every legacy session doubles instead.
 
 **`FULL OUTER JOIN`, not `INNER`.** A device type that went out and never came back is exactly
 the case we exist to show, and an inner join hides it.
@@ -352,30 +369,45 @@ the photo already exist and must survive.
 
 ---
 
-## 6a. The zone/overview cross-check
+## 6a. The wide/close-up cross-check
 
-The three zones are summed. The overview covers the same devices independently. When all four
-captures of a session have been analysed, compare them:
+The wide shot carries the count. The close-up covers the same devices through a tighter frame.
+When both captures of a session have been analysed, compare them:
 
 ```
-zone_total     = SUM(count) over zones left+middle+right, per device_type
-overview_total = count from the overview photo, per device_type
+counted_total = SUM(count) over the counted photo (wide; or left+middle+right), per device_type
+check_total   = count from the cross-check photo (closeup; or overview),      per device_type
 ```
 
-If they differ by more than **2 devices** for any type, set `needs_review = 1` on the session's
-overview event with a reason like `zones total 12 cones, overview shows 7`.
+If they differ by more than **2 devices** for any type, set `needs_review = 1` with a reason like
+`counted 12 cones, cross-check shows 7`.
+
+**Flag the counted event, not the cross-check one.** This changed with the two-photo design. The
+operator taps the amber row and corrects it; if that row is the cross-check, the headline total
+does not move, because the row they just fixed was never in the total. The number stays wrong and
+the human check appears to do nothing. Blame the row whose correction actually fixes the number.
+(Legacy sessions have three counted rows and no way to tell which is at fault, so they keep
+flagging the `overview`.)
 
 This is the only error detection left in the system now that the beam is gone, so do not skip it.
-It catches the two failures that would otherwise pass silently:
+It catches what would otherwise pass silently:
 
-- **A zone photographed twice** (or two zones overlapping) — zone total comes out too high.
-- **A zone missed or mis-aimed** — zone total comes out too low.
+- **Something outside the load counted** — background clutter, cones on the ground beside the
+  truck, a second pallet in shot. The wide shot reads high; the close-up, which cannot see them,
+  does not.
+- **Something inside the load missed** — occlusion, glare, a stack read as one device. The wide
+  shot reads low against a tighter frame that resolves the same pile.
 
 Both produce a confident, plausible, wrong number. The disagreement is what makes them visible.
 
-Do **not** auto-correct to the overview. It is a sanity check, not a better measurement — the
-wide shot has the most occlusion and is the least reliable single count. It says "these two
-methods disagree, a human should look", and that is all.
+Do **not** auto-correct to the close-up. It is a sanity check, not a better measurement — it sees
+a deliberately smaller frame, so it is the one that can miss a device at the edge of the bed. It
+says "these two methods disagree, a human should look", and that is all.
+
+**The close-up must contain the entire load.** That is what makes a disagreement meaningful. If
+the crop clips real devices it will read low on every single session and the flag becomes noise
+that everyone learns to ignore — which is worse than not having it. `CLOSEUP_SCALE` in
+`edge/camera.py` is the dial; widen it until the whole load fits.
 
 **Vision down or out of quota:** log it, leave `device_type` NULL, return `200` anyway. Sweep
 NULLs later with a timer function if you have time. If you never do, the totals are still right.
@@ -401,19 +433,23 @@ Run this whole list. Each step tells you where a failure is.
 
 1. `curl https://func-baettledger.azurewebsites.net/api/health` → `{"status":"ok"}`
 2. POST without the key header → `401`
-3. POST with `"zone": "middl"` → `400` (typo rejected, not silently dropped)
+3. POST with `"zone": "wid"` → `400` (typo rejected, not silently dropped)
 4. Open a session → row in `session`
-5. Sparshan presses the button 4 times → 4 rows in `count_event`, zones
-   `left/middle/right/overview`, 4 photos in Blob
-6. Replay any one of them → still 4 rows, `200`
-7. Wait ~10s → `count_detection` rows appear; a mixed zone gives 2+ rows for one event
+5. Sparshan presses the button once → 2 rows in `count_event`, zones `wide` and `closeup`,
+   2 photos in Blob
+6. Replay either of them → still 2 rows, `200`
+7. Wait ~10s → `count_detection` rows appear; a mixed photo gives 2+ rows for one event
 8. Close the session → `status = closed`
-9. `/api/today` → total equals the three zones summed, **overview excluded**.
+9. `/api/today` → total equals the **wide shot alone**, close-up excluded.
    Count the cones on the table by hand and check the number matches.
-10. Deliberately photograph one zone twice → zone/overview disagree → `needs_review = 1`
-11. Run an IN session with one device removed → `/api/today` difference is 1
+10. Press twice within the same minute → **two separate sessions**, not one session with four
+    events. This is the Aug 14 bug: the second capture used to be swallowed by the first
+    session, which left the dashboard's OUT tab showing the previous run's photos.
+11. Put something device-shaped on the ground beside the truck → wide and close-up disagree →
+    `needs_review = 1`
+12. Run an IN session with one device removed → `/api/today` difference is 1
 
-Step 9 is the one to run twice. If the overview is leaking into the sum, the number is roughly
+Step 9 is the one to run twice. If the close-up is leaking into the sum, the number is roughly
 double and still looks like a believable inventory.
 
 ---
@@ -425,7 +461,7 @@ double and still looks like a believable inventory.
 | Cold start, first request ~10s | Warm it with a `/api/health` call before you start | Yes |
 | Duplicate events | The unique constraint absorbs them | Yes |
 | Pi goes offline mid-session | Pi queues; replays on reconnect | Yes |
-| Zone/overview disagree | Flagged for review; operator confirms on screen | Yes |
+| Wide/close-up disagree | Flagged for review; operator confirms on screen | Yes |
 | Agent returns junk | Event flagged for review, photos intact, operator counts from them | Degraded |
 | Vision quota exceeded | Photos still land. Operator counts from them on screen | Degraded |
 | Vision down for the whole demo | Dashboard shows "pending", not zero. Fall back to the photos | Barely |

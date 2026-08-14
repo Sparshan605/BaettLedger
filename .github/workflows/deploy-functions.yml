@@ -28,6 +28,14 @@ name: Deploy Function App
 on:
   workflow_dispatch:
 
+# Two deploys running at once is how you get a half-published app. Queue the
+# second one instead of cancelling the first: cancelling mid-publish is exactly
+# the state that left the API serving 404s, so unlike the dashboard workflow
+# this one must never interrupt a run in flight.
+concurrency:
+  group: deploy-functions
+  cancel-in-progress: false
+
 env:
   AZURE_FUNCTIONAPP_NAME: func-baettledger
   PYTHON_VERSION: "3.11"

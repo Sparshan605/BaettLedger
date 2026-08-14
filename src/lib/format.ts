@@ -25,7 +25,7 @@ export function isStale(isoUtc: string | null, staleAfterMs = 2 * 60 * 1000): bo
 }
 
 // "3 cone, 1 sign" for a photo's detections. Only call this for an analysed
-// zone — an empty list here means a genuinely empty zone ("0"), which is
+// photo — an empty list here means a genuinely empty one ("0"), which is
 // distinct from "not analysed yet" (docs/dashboard.md §5).
 export function summarizeDevices(devices: { device_type: string; count: number }[]): string {
   if (devices.length === 0) return "0";

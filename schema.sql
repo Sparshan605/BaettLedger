@@ -1,8 +1,12 @@
 -- BaettLedger schema — v2, zone-based architecture (Aug 13 rewrite)
 -- Source: docs/api.md §5. The beam sensor is gone. One session now produces
--- FOUR photos (left, middle, right, overview), each of which may show
--- several device types at once. Run this against a fresh database — it is
--- NOT an ALTER script over the old beam-era schema.
+-- TWO photos of a single capture — 'wide' (counted) and 'closeup'
+-- (cross-check) — each of which may show several device types at once.
+--
+-- Run this against a FRESH database only. It drops nothing itself, but
+-- run_schema.py drops every table before applying it, so never point that at a
+-- database with real data in it. To change an existing database, write a
+-- migration instead — migrate_zones.py is the worked example.
 
 CREATE TABLE session (
     session_id     NVARCHAR(64)  PRIMARY KEY,
@@ -14,16 +18,22 @@ CREATE TABLE session (
     status         NVARCHAR(10)  NOT NULL DEFAULT 'open'
 );
 
--- One row per PHOTO now, not one row per device. zone tells you which of the
--- four captures this is. device_type/count no longer live here — see
--- count_detection below, since one photo can hold several device types.
+-- One row per PHOTO now, not one row per device. zone tells you which capture
+-- this is: 'wide' is the counted one, 'closeup' the cross-check.
+-- device_type/count no longer live here — see count_detection below, since one
+-- photo can hold several device types.
+--
+-- left/middle/right/overview are the retired three-zone design. They stay
+-- permitted so rows captured before Aug 13 remain valid; db.COUNT_ZONES is what
+-- decides which of them are added to a total.
 CREATE TABLE count_event (
     event_id     INT IDENTITY(1,1) PRIMARY KEY,
     session_id   NVARCHAR(64) NOT NULL REFERENCES session(session_id),
     device_id    NVARCHAR(64) NOT NULL,
-    sequence     INT          NOT NULL,   -- 1-4 within the session
+    sequence     INT          NOT NULL,   -- 1-2 within the session
     zone         NVARCHAR(10) NOT NULL
-        CHECK (zone IN ('left','middle','right','overview')),
+        CONSTRAINT ck_event_zone CHECK
+            (zone IN ('wide','closeup','left','middle','right','overview')),
     captured_at  DATETIME2    NOT NULL,   -- Pi clock
     received_at  DATETIME2    NOT NULL DEFAULT SYSUTCDATETIME(),  -- server clock, trust this one
     photo_url    NVARCHAR(400) NULL,

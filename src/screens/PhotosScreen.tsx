@@ -1,5 +1,6 @@
 import { ConfidencePill } from "../components/ConfidencePill";
 import { formatClock, summarizeDevices } from "../lib/format";
+import { isCheckZone } from "../types";
 import type { CountEvent, SessionRef, SessionType } from "../types";
 
 interface PhotosScreenProps {
@@ -21,7 +22,7 @@ function PhotoRow({
   // Only an unconfirmed low-confidence/flagged photo is clickable — that's
   // the one tap that opens Screen 3 (docs/dashboard.md §2).
   const clickable = event.needs_review && event.confirmed_at === null;
-  const isOverview = event.zone === "overview";
+  const isCheck = isCheckZone(event.zone);
 
   return (
     <li
@@ -40,10 +41,10 @@ function PhotoRow({
         <span
           className={
             "w-20 font-mono text-xs font-semibold uppercase tracking-wider " +
-            (isOverview ? "text-accent" : "text-text-muted")
+            (isCheck ? "text-accent" : "text-text-muted")
           }
         >
-          {isOverview ? "check" : event.zone}
+          {isCheck ? "check" : event.zone}
         </span>
         <span className="flex-1 font-medium text-ink">
           {event.analyzed_at === null ? (
@@ -59,10 +60,12 @@ function PhotoRow({
           {formatClock(event.captured_at)}
         </span>
       </div>
-      {/* The overview is a sanity check, not part of the total — its mismatch
-          reason is the most useful thing on the screen when it fires
-          (docs/dashboard.md §2). */}
-      {isOverview && event.reason && (
+      {/* Wherever the reason lands, show it. The cross-check now flags the
+          COUNTED row, because that is the one whose correction moves the
+          headline total (db.run_zone_overview_cross_check) — gating this on the
+          check row would hide the single most useful sentence on the screen at
+          exactly the moment something has gone wrong (docs/dashboard.md §2). */}
+      {event.reason && (
         <p className="pl-20 font-mono text-xs text-warning">{event.reason}</p>
       )}
     </li>
@@ -77,12 +80,13 @@ export function PhotosScreen({
   loading,
   onOpenReview,
 }: PhotosScreenProps) {
-  // The three zones sum to the inventory total; the overview never
-  // participates. Keeping it visually separate stops a reader from adding
-  // all four rows and getting a different number than Screen 1
-  // (docs/dashboard.md §2, §8).
-  const zoneEvents = events.filter((e) => e.zone !== "overview");
-  const overviewEvent = events.find((e) => e.zone === "overview");
+  // The wide shot IS the inventory total; the close-up never participates.
+  // Keeping it visually separate stops a reader from adding both rows and
+  // getting a different number than Screen 1 (docs/dashboard.md §2, §8) —
+  // which matters more now that there are only two rows and they are so close
+  // together on screen.
+  const countedEvents = events.filter((e) => !isCheckZone(e.zone));
+  const checkEvent = events.find((e) => isCheckZone(e.zone));
 
   return (
     <div className="animate-fade-up space-y-5">
@@ -116,13 +120,13 @@ export function PhotosScreen({
       ) : (
         <div>
           <ul className="divide-y divide-border">
-            {zoneEvents.map((event) => (
+            {countedEvents.map((event) => (
               <PhotoRow key={event.event_id} event={event} onOpenReview={onOpenReview} />
             ))}
           </ul>
-          {overviewEvent && (
+          {checkEvent && (
             <ul className="mt-2 border-t-2 border-dashed border-border pt-1">
-              <PhotoRow event={overviewEvent} onOpenReview={onOpenReview} />
+              <PhotoRow event={checkEvent} onOpenReview={onOpenReview} />
             </ul>
           )}
         </div>
