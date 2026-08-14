@@ -243,9 +243,18 @@ def get_today(date_str):
     with get_connection() as conn:
         cur = conn.cursor()
 
+        # Newest first. Without the ORDER BY, next() below picked whichever row
+        # SQL happened to return first — in practice the oldest — so re-running
+        # an inventory left the dashboard's Photos screen showing the first
+        # capture of the day while the totals already included the newest one.
+        #
+        # The totals themselves are unaffected: the reconciliation below sums
+        # every session of the day. This only chooses which session the Photos
+        # screen links to, and that should be the most recent.
         cur.execute(
             """SELECT session_id, session_type, status FROM session
-               WHERE session_date = ?""",
+               WHERE session_date = ?
+               ORDER BY opened_at DESC""",
             date_str,
         )
         sessions = cur.fetchall()
