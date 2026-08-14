@@ -2,11 +2,11 @@ import { useState } from "react";
 import { ReviewModal } from "./components/ReviewModal";
 import { useEvents } from "./hooks/useEvents";
 import { useTodaySummary } from "./hooks/useTodaySummary";
-import { EventsScreen } from "./screens/EventsScreen";
+import { PhotosScreen } from "./screens/PhotosScreen";
 import { TodayScreen } from "./screens/TodayScreen";
 import type { CountEvent, SessionType } from "./types";
 
-type Screen = "today" | "events";
+type Screen = "today" | "photos";
 
 function todayDateString(): string {
   return new Date().toISOString().slice(0, 10);
@@ -45,10 +45,10 @@ export default function App() {
             Today
           </button>
           <button
-            onClick={() => setScreen("events")}
-            className={screen === "events" ? "text-ink" : "text-text-muted transition-colors hover:text-text"}
+            onClick={() => setScreen("photos")}
+            className={screen === "photos" ? "text-ink" : "text-text-muted transition-colors hover:text-text"}
           >
-            Events
+            Photos
           </button>
         </nav>
       </header>
@@ -56,7 +56,7 @@ export default function App() {
       {screen === "today" ? (
         <TodayScreen data={today.data} loading={today.loading} reconnecting={today.reconnecting} />
       ) : (
-        <EventsScreen
+        <PhotosScreen
           tab={tab}
           onTabChange={setTab}
           activeSession={activeSession}

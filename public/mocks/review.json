@@ -3,25 +3,43 @@
     {
       "event_id": 42,
       "sequence": 2,
-      "device_type": "cone",
-      "count": 2,
+      "zone": "middle",
+      "devices": [{ "device_type": "cone", "count": 5 }],
       "confidence": 0.61,
       "needs_review": true,
       "reason": "devices overlap, could not separate",
       "photo_url": "/mocks/placeholder.svg",
       "captured_at": "2026-08-19T14:17:22Z",
+      "analyzed_at": "2026-08-19T14:17:30Z",
       "confirmed_at": null
     },
     {
-      "event_id": 45,
-      "sequence": 5,
-      "device_type": "unknown",
-      "count": 1,
-      "confidence": 0.55,
+      "event_id": 43,
+      "sequence": 3,
+      "zone": "right",
+      "devices": [
+        { "device_type": "cone", "count": 4 },
+        { "device_type": "unknown", "count": 1 }
+      ],
+      "confidence": 0.85,
       "needs_review": true,
       "reason": "type not in approved list",
       "photo_url": "/mocks/placeholder.svg",
-      "captured_at": "2026-08-19T14:19:00Z",
+      "captured_at": "2026-08-19T14:18:03Z",
+      "analyzed_at": "2026-08-19T14:18:11Z",
+      "confirmed_at": null
+    },
+    {
+      "event_id": 44,
+      "sequence": 4,
+      "zone": "overview",
+      "devices": [{ "device_type": "cone", "count": 7 }],
+      "confidence": 0.8,
+      "needs_review": true,
+      "reason": "zones total 12 cones, overview shows 7",
+      "photo_url": "/mocks/placeholder.svg",
+      "captured_at": "2026-08-19T14:18:31Z",
+      "analyzed_at": "2026-08-19T14:18:40Z",
       "confirmed_at": null
     }
   ]

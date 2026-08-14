@@ -1,5 +1,5 @@
 import { DeviceOfflineDot } from "../components/DeviceOfflineDot";
-import type { TodaySummary } from "../types";
+import type { SessionRef, TodaySummary } from "../types";
 
 interface TodayScreenProps {
   data: TodaySummary | null;
@@ -10,33 +10,42 @@ interface TodayScreenProps {
 function InventoryTile({
   label,
   value,
-  sessionOpenAndEmpty,
+  session,
 }: {
   label: string;
   value: number;
-  sessionOpenAndEmpty: boolean;
+  session: SessionRef | null;
 }) {
+  const isOpen = session?.status === "open";
+
   return (
     <div className="flex-1 rounded-2xl border border-border bg-surface p-6 text-center">
       <div className="font-mono text-xs font-medium uppercase tracking-[0.2em] text-text-muted">
         {label}
       </div>
-      {sessionOpenAndEmpty ? (
+      {isOpen && value === 0 ? (
         <div className="mt-4 text-base font-medium text-text-muted">
           Session open — waiting for first device.
         </div>
       ) : (
-        <div className="mt-1 font-mono text-6xl font-semibold tabular-nums text-ink">{value}</div>
+        <div className="mt-1 font-mono text-6xl font-semibold tabular-nums text-ink">
+          {value}
+          {/* Still capturing/analysing — this number is about to change.
+              docs/dashboard.md §1 and §8: never show a number that looks final
+              when it isn't. */}
+          {isOpen && <span className="text-text-muted">…</span>}
+        </div>
       )}
     </div>
   );
 }
 
-function DifferenceBanner({ difference }: { difference: number }) {
+function DifferenceBanner({ difference, provisional }: { difference: number; provisional: boolean }) {
+  const suffix = provisional ? "…" : "";
   if (difference > 0) {
     return (
       <div className="rounded-2xl border border-danger/30 bg-danger-soft px-6 py-5 text-center text-2xl font-bold tracking-tight text-danger">
-        ⚠ {difference} MISSING
+        ⚠ {difference} MISSING{suffix}
       </div>
     );
   }
@@ -45,13 +54,13 @@ function DifferenceBanner({ difference }: { difference: number }) {
     // plainly rather than rendering a negative number (docs/dashboard.md §5).
     return (
       <div className="rounded-2xl border border-warning/30 bg-warning-soft px-6 py-5 text-center text-2xl font-bold tracking-tight text-warning">
-        {Math.abs(difference)} EXTRA RETURNED
+        {Math.abs(difference)} EXTRA RETURNED{suffix}
       </div>
     );
   }
   return (
     <div className="rounded-2xl border border-success/30 bg-success-soft px-6 py-5 text-center text-2xl font-bold tracking-tight text-success">
-      ALL DEVICES RETURNED
+      ALL DEVICES RETURNED{suffix}
     </div>
   );
 }
@@ -69,8 +78,7 @@ export function TodayScreen({ data, loading, reconnecting }: TodayScreenProps) {
     );
   }
 
-  const outOpenAndEmpty = data.out_session?.status === "open" && data.starting_inventory === 0;
-  const inOpenAndEmpty = data.in_session?.status === "open" && data.ending_inventory === 0;
+  const provisional = data.out_session?.status === "open" || data.in_session?.status === "open";
 
   return (
     <div className="animate-fade-up space-y-6">
@@ -92,16 +100,16 @@ export function TodayScreen({ data, loading, reconnecting }: TodayScreenProps) {
         <InventoryTile
           label="Starting inventory"
           value={data.starting_inventory}
-          sessionOpenAndEmpty={outOpenAndEmpty}
+          session={data.out_session}
         />
         <InventoryTile
           label="Ending inventory"
           value={data.ending_inventory}
-          sessionOpenAndEmpty={inOpenAndEmpty}
+          session={data.in_session}
         />
       </div>
 
-      <DifferenceBanner difference={data.difference} />
+      <DifferenceBanner difference={data.difference} provisional={provisional} />
 
       <div className="overflow-hidden rounded-2xl border border-border bg-surface">
         <table className="w-full text-left text-sm">

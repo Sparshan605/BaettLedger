@@ -1,13 +1,15 @@
 {
   "date": "2026-08-19",
-  "starting_inventory": 4,
+  "starting_inventory": 15,
   "ending_inventory": 3,
-  "difference": 1,
+  "difference": 12,
   "out_session": { "session_id": "sess-2026-08-19-0815", "status": "closed" },
-  "in_session": { "session_id": "sess-2026-08-19-1630", "status": "closed" },
+  "in_session": { "session_id": "sess-2026-08-19-1630", "status": "open" },
   "by_type": [
-    { "device_type": "cone", "out_total": 3, "in_total": 2, "difference": 1 },
-    { "device_type": "sign", "out_total": 1, "in_total": 1, "difference": 0 },
+    { "device_type": "cone", "out_total": 12, "in_total": 3, "difference": 9 },
+    { "device_type": "sign", "out_total": 1, "in_total": 0, "difference": 1 },
+    { "device_type": "barricade", "out_total": 1, "in_total": 0, "difference": 1 },
+    { "device_type": "unknown", "out_total": 1, "in_total": 0, "difference": 1 },
     { "device_type": "delineator", "out_total": 0, "in_total": 1, "difference": -1 }
   ],
   "device_last_seen": "2026-08-19T16:41:02Z",
