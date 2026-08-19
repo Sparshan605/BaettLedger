@@ -62,6 +62,45 @@ def utc_now():
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+# Which day is this? The crew's day, not the calendar's.
+#
+# Every timestamp stored and sent stays UTC — that is what the API parses and
+# what makes two devices comparable. But the DAY a session belongs to has to
+# follow the people, and they are in America/Vancouver. The Pi is physically at
+# the site, so its own clock settings are the site's by definition; read them
+# rather than hard-coding a zone here, and `timedatectl` stays the one place
+# anyone would think to change it.
+#
+# This was UTC everywhere until Aug 18, which put the day boundary at 5 PM
+# local. An OUT at 4:55 PM and its IN at 5:05 PM landed on different days: the
+# counters reset in between, so the LCD went back to "Press: load OUT" — the
+# screen appearing to be stuck on OUT — and the return trip was filed as a
+# second OUT that the dashboard had nothing to pair with.
+def _local(utc_ts):
+    """A UTC timestamp string as an aware datetime in the Pi's own timezone."""
+    return (datetime.strptime(utc_ts, "%Y-%m-%dT%H:%M:%SZ")
+            .replace(tzinfo=timezone.utc).astimezone())
+
+
+def local_date(utc_ts=None):
+    """The operating day (YYYY-MM-DD) a UTC timestamp falls in. Defaults to now."""
+    return _local(utc_ts or utc_now()).strftime("%Y-%m-%d")
+
+
+def _seconds_apart(a, b):
+    """Distance between two UTC timestamp strings, in seconds."""
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return abs((datetime.strptime(a, fmt) - datetime.strptime(b, fmt)).total_seconds())
+
+
+# How long after a press another row with the same id still counts as the SAME
+# press being retried. Needed once the id is built from local time: local time
+# repeats an hour when DST ends, so 01:30:00 happens twice on the first Sunday
+# of November, and without this the second press would silently reuse — and
+# reopen — the session from an hour earlier.
+RETRY_WINDOW_SECONDS = 120
+
+
 @contextmanager
 def _connect(db_path=None):
     """Open, commit, close. One connection per operation — see module docstring."""
@@ -98,7 +137,7 @@ def next_direction(db_path=None, today=None):
     Otherwise OUT. That handles the normal day, a repeated run after a mistake,
     and the first session after midnight, without a button to get wrong.
     """
-    today = today or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = today or local_date()
     with _connect(db_path) as conn:
         row = conn.execute(
             """SELECT
@@ -123,7 +162,7 @@ def cycle_complete(db_path=None, today=None):
     Pressing the button again simply starts the next OUT, which is what
     next_direction() already returns at this point.
     """
-    today = today or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    today = today or local_date()
     with _connect(db_path) as conn:
         row = conn.execute(
             """SELECT
@@ -143,8 +182,9 @@ def open_session(db_path=None, session_type=None, now=None):
     session_type defaults to next_direction(); pass it explicitly only to
     override, e.g. from a rehearsal script.
     """
-    now = now or utc_now()
-    session_date = now[:10]
+    now = now or utc_now()          # opened_at stays UTC; only the day is local
+    local = _local(now)
+    session_date = local.strftime("%Y-%m-%d")
     session_type = session_type or next_direction(db_path, today=session_date)
 
     # Seconds, not just HH:MM. The id used to stop at the minute, so two presses
@@ -154,17 +194,23 @@ def open_session(db_path=None, session_type=None, now=None):
     # IN session, so the dashboard's OUT tab kept showing the previous run's
     # photos while IN showed both captures. Two presses cannot share a second:
     # the countdown alone is three.
-    base = f"sess-{session_date}-{now[11:13]}{now[14:16]}{now[17:19]}"
+    #
+    # Local time, to match session_date. A UTC clock time under a local date
+    # reads as a typo at 5 PM ("sess-2026-08-18-005530" for a 5:55 PM press) and
+    # sends whoever is debugging it looking for a bug that is not there.
+    base = f"sess-{session_date}-{local.strftime('%H%M%S')}"
 
     with _connect(db_path) as conn:
-        # Same second AND same direction is a retry of one press, so reusing the
-        # row is right — that is what keeps the upload idempotency key stable.
-        # Same second but a different direction is a genuine collision, and
+        # Same second AND same direction AND within a couple of minutes is a
+        # retry of one press, so reusing the row is right — that is what keeps
+        # the upload idempotency key stable. A different direction, or the same
+        # clock time an hour later when DST ends, is a genuine collision, and
         # silently absorbing it is the bug above; take the next id instead.
         session_id, suffix = base, 1
         while True:
             existing = conn.execute(
-                "SELECT session_type FROM session WHERE session_id = ?", (session_id,)
+                "SELECT session_type, opened_at FROM session WHERE session_id = ?",
+                (session_id,),
             ).fetchone()
             if existing is None:
                 conn.execute(
@@ -174,7 +220,8 @@ def open_session(db_path=None, session_type=None, now=None):
                     (session_id, DEVICE_ID, session_type, session_date, now),
                 )
                 break
-            if existing["session_type"] == session_type:
+            if (existing["session_type"] == session_type
+                    and _seconds_apart(existing["opened_at"], now) <= RETRY_WINDOW_SECONDS):
                 break
             suffix += 1
             session_id = f"{base}-{suffix}"
@@ -339,8 +386,17 @@ def session_totals(session_id, db_path=None):
 
 
 if __name__ == "__main__":
+    import os
     import sys
     import tempfile
+    import time
+
+    # The operating day now comes from the machine's own timezone, so the
+    # expected session ids below would otherwise depend on where this is run.
+    # Pin it to the site: the checks then mean the same thing on the Pi, on a
+    # laptop and in CI, and the 5 PM boundary case has a boundary to cross.
+    os.environ["TZ"] = "America/Vancouver"
+    time.tzset()
 
     tmp = Path(tempfile.mkdtemp()) / "selftest.db"
     failures = []
@@ -365,7 +421,8 @@ if __name__ == "__main__":
     print("\nOUT session, one inventory")
     s1 = open_session(tmp, now="2026-08-19T08:15:00Z")
     check("session_type", s1["session_type"], "OUT")
-    check("session_id format", s1["session_id"], "sess-2026-08-19-081500")
+    # 08:15Z is 01:15 in Vancouver — the id carries local time, like session_date.
+    check("session_id format", s1["session_id"], "sess-2026-08-19-011500")
 
     frames = [("left", "/tmp/a_left.jpg"), ("middle", "/tmp/a_middle.jpg"),
               ("right", "/tmp/a_right.jpg"), ("overview", "/tmp/a.jpg")]
@@ -447,6 +504,34 @@ if __name__ == "__main__":
     print("\nre-opening the same press is still idempotent")
     again = open_session(tmp, "OUT", now="2026-08-19T16:30:00Z")
     check("same second, same direction reuses the row", again["session_id"], s3["session_id"])
+
+    print("\nan evening run across the UTC midnight (the stuck-on-OUT bug)")
+    # UTC rolls at 5 PM here, right between a 4:55 PM load and its 5:05 PM
+    # return. When the day was UTC the counters reset in between: the LCD went
+    # back to "Press: load OUT" mid-run, and the return trip was filed as a
+    # second OUT the dashboard had nothing to pair with.
+    dusk = Path(tempfile.mkdtemp()) / "dusk.db"
+    init(dusk)
+    d_out = open_session(dusk, now="2026-08-18T23:55:00Z")   # 16:55 local
+    close_session(d_out["session_id"], dusk)
+    check("OUT is filed under the local day", d_out["session_date"], "2026-08-18")
+    check("still says IN after UTC midnight", next_direction(dusk, today="2026-08-18"), "IN")
+
+    d_in = open_session(dusk, now="2026-08-19T00:05:00Z")    # 17:05 local, next UTC day
+    close_session(d_in["session_id"], dusk)
+    check("IN lands on the same operating day", d_in["session_date"], "2026-08-18")
+    check("its id reads in local time", d_in["session_id"], "sess-2026-08-18-170500")
+    check("the pair completes the cycle", cycle_complete(dusk, today="2026-08-18"), True)
+    check("and the next run starts at OUT", next_direction(dusk, today="2026-08-18"), "OUT")
+
+    print("\nthe same local clock time an hour later is not a retry")
+    # Only reachable when DST ends and 01:30 happens twice. Without the retry
+    # window the second press would reuse — and reopen — the first session.
+    twice = Path(tempfile.mkdtemp()) / "dst.db"
+    init(twice)
+    first = open_session(twice, "OUT", now="2026-11-01T08:30:00Z")   # 01:30 PDT
+    second = open_session(twice, "OUT", now="2026-11-01T09:30:00Z")  # 01:30 PST
+    check("distinct sessions, not a merge", first["session_id"] != second["session_id"], True)
 
     print("\na different day starts fresh")
     check("tomorrow is OUT", next_direction(tmp, today="2026-08-20"), "OUT")

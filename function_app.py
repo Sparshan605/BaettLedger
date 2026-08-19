@@ -189,7 +189,10 @@ def close_session(req: func.HttpRequest) -> func.HttpResponse:
 # ---------------------------------------------------------------------------
 @app.route(route="today", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
 def get_today(req: func.HttpRequest) -> func.HttpResponse:
-    date_str = req.params.get("date") or datetime.now(timezone.utc).date().isoformat()
+    # The site's day, not UTC's — see db.OPERATING_TZ. With UTC here the
+    # dashboard jumped to an empty "tomorrow" at 5 PM local, in the middle of
+    # the run it was supposed to be showing.
+    date_str = req.params.get("date") or db.today_str()
     return _json(db.get_today(date_str))
 
 

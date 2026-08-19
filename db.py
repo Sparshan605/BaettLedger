@@ -16,8 +16,34 @@ design are still in the table and still total correctly — see COUNT_ZONES.
 import os
 import pyodbc
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 APPROVED_DEVICE_TYPES = {"cone", "sign", "barricade", "delineator"}
+
+# The day a session belongs to, as the crew sees it.
+#
+# Timestamps stay UTC everywhere; only the DAY is local. UTC is the wrong
+# boundary for a crew in Vancouver because it rolls at 5 PM local — mid-way
+# through the evening return trip — which filed a single OUT/IN run under two
+# different dates and left the dashboard with an OUT it could never pair.
+#
+# The Pi derives the same day from its own clock settings (edge/store.py). The
+# server has no local timezone to read — Azure Functions run in UTC — so the
+# site's zone is named here, overridable with an OPERATING_TZ app setting if the
+# device ever moves. Both ends must agree or the reconciliation splits again.
+OPERATING_TZ = ZoneInfo(os.environ.get("OPERATING_TZ", "America/Vancouver"))
+
+
+def operating_date(dt):
+    """The operating day a timestamp falls in. Naive input is read as UTC."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(OPERATING_TZ).date()
+
+
+def today_str():
+    """Today (YYYY-MM-DD) at the site, not in UTC."""
+    return operating_date(datetime.now(timezone.utc)).isoformat()
 
 # An inventory is two photos: `wide` is the uncropped frame and carries the
 # count, `closeup` is the same load through a tighter frame and is only ever a
@@ -48,7 +74,9 @@ def upsert_session(device_id, session_id, session_type, opened_at):
     Returns (status, existing_row) where status is 'created' or 'exists'.
     api.md: POST /api/sessions -> 201 new, 200 if it already exists (same body).
     """
-    session_date = opened_at.date()
+    # Not opened_at.date(): that is the UTC day, and it disagrees with the day
+    # the Pi filed the session under for every capture after 5 PM local.
+    session_date = operating_date(opened_at)
     with get_connection() as conn:
         cur = conn.cursor()
         cur.execute("SELECT session_id, status FROM session WHERE session_id = ?", session_id)

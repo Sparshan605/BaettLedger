@@ -4,3 +4,4 @@ azure-storage-blob
 azure-ai-vision-imageanalysis
 azure-core
 requests
+tzdata

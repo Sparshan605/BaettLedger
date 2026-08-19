@@ -8,8 +8,17 @@ import type { CountEvent, SessionType } from "./types";
 
 type Screen = "today" | "photos";
 
+// The site's day, matching db.OPERATING_TZ on the server and the Pi's own
+// clock. toISOString() is UTC, which rolls at 5 PM in Vancouver: the dashboard
+// used to jump to an empty "tomorrow" halfway through the evening return trip,
+// while the device was still filing that run under today. Pinned to the site
+// rather than the viewer's own timezone so that opening the dashboard from
+// anywhere still shows the run the truck is actually on. en-CA is the locale
+// that formats as YYYY-MM-DD, which is what /api/today expects.
+const SITE_TIMEZONE = "America/Vancouver";
+
 function todayDateString(): string {
-  return new Date().toISOString().slice(0, 10);
+  return new Date().toLocaleDateString("en-CA", { timeZone: SITE_TIMEZONE });
 }
 
 export default function App() {
