@@ -9,6 +9,7 @@ raises a device-busy error that reads like a wiring fault and costs an hour to
 diagnose, so this module keeps a single instance and everything else calls
 get_frame(). Do not instantiate Picamera2 anywhere else.
 """
+import os
 import time
 from pathlib import Path
 
@@ -26,6 +27,21 @@ _WARMUP_SECONDS = 2.0
 # classify a photo like that, so it is worth catching on the Pi.
 DARK_THRESHOLD = 12.0
 
+# Exposure compensation, in stops, handed to the sensor's auto-exposure. 0.0 is
+# whatever the AE algorithm picks on its own; -1.0 is one stop darker.
+#
+# Auto-exposure meters the WHOLE frame, and most of this frame is truck bed. A
+# bright venue — daylight through a bay door, overhead floods — drives the AE to
+# expose for that background and blows out the devices themselves: white bands
+# on the cones merge into one another and a stack stops being countable. Pulling
+# a stop out protects the highlights, which is where the countable detail lives.
+#
+# Override per site without editing code: CAMERA_EV=-1.5 in the service
+# environment. Going too far the other way costs more than it saves — under
+# DARK_THRESHOLD the frame is rejected outright, and the agent now treats a dim
+# photo as a reason to flag for review.
+EXPOSURE_EV = float(os.environ.get("CAMERA_EV", "-1.0"))
+
 _camera = None
 
 
@@ -36,6 +52,11 @@ def _open():
         cam = Picamera2()
         cam.configure(cam.create_still_configuration(main={"size": (1920, 1080)}))
         cam.start()
+        # Set before the warm-up sleep, not after: AE needs those two seconds to
+        # converge ON the compensated target. Applied after, the first capture
+        # of a session is still metered for the uncompensated scene.
+        if EXPOSURE_EV:
+            cam.set_controls({"ExposureValue": EXPOSURE_EV})
         time.sleep(_WARMUP_SECONDS)
         _camera = cam
     return _camera
