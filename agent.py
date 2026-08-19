@@ -42,8 +42,18 @@ Count EVERY device you can see.
 Reply with ONLY this JSON object, no prose and no code fence. (The literal word
 "json" must stay in this prompt: the API rejects the request outright when
 response_format is json_object and no message mentions it.)
-{"devices": [{"device_type": "cone", "count": 3}],
+{"devices": [{"device_type": "cone",
+              "items": [{"x": 0.15, "desc": "red cone, square base, left of the sign"},
+                        {"x": 0.26, "desc": "red cone, square base, touching the first"},
+                        {"x": 0.55, "desc": "red cone, square base, right of the drums"}],
+              "count": 3}],
  "confidence": 0.0, "needs_review": false, "reason": "..."}
+
+items holds ONE entry per individual device: x is how far across the image it
+stands (0.0 left edge, 1.0 right edge) and desc names what you are pointing at
+and what is beside it. Point at each device and describe it BEFORE you total.
+count must equal the number of items you listed. If you cannot describe a
+distinct object at a distinct place, it is not there — do not list it.
 
 device_type must be exactly one of: cone, sign, barricade, delineator, barrel, unknown
   cone        traffic cone — square base, tapering to a point, ANY colour
@@ -61,10 +71,19 @@ cone; a yellow drum is a barrel. Never answer unknown, and never lower your
 confidence, because the colour was not the one you expected.
 
 Stacked and nested devices are the normal case, not a problem case. A stack of
-cones is a stack of cones — count it and stay confident. To count a nested
-stack: count the visible rims/ridges up the side of the stack, or count the
-bases; a clean stack of N cones shows N base flanges. If you can count the
+cones is a stack of cones — count it and stay confident. If you can count the
 stack, that is a confident answer, not a reviewable one.
+
+Count cones by their BASES. One base flange on the ground, one cone. This is the
+rule; the next paragraph is the only exception to it.
+
+Cones are NESTED only when they sit inside one another as a single continuous
+tapering column, with one base at the bottom and stepped ridges above it. Only
+in that case do you count the ridges. Cones standing side by side, even touching
+or overlapping from this angle, are separate cones — count their separate bases.
+
+The reflective bands painted around a single cone are NOT stack ridges. A cone
+with two or three white bands is still one cone. Never turn a band into a count.
 
 Rules:
 - One entry per type. A load with cones and a sign has two entries. Return an
@@ -178,6 +197,21 @@ def _normalize_devices(raw_devices) -> list[dict]:
         except (TypeError, ValueError):
             count = 0
             flip_needs_review = True
+
+        # The enumeration is the evidence; the count is the model's arithmetic
+        # over it. When they disagree, believe the list of things it could
+        # actually point at and describe.
+        #
+        # This is not hypothetical. Asked for a bare count, the model reported 4
+        # cones for a bed holding 3 — a phantom cone in among the drums, at 0.90
+        # confidence, and the close-up agreed with it, so nothing flagged it.
+        # Made to name and place each cone, the phantom had nowhere to stand.
+        items = d.get("items")
+        if isinstance(items, list) and items:
+            if len(items) != count:
+                count = len(items)
+                flip_needs_review = True
+
         normalized.append({"device_type": device_type, "count": count})
     return normalized, flip_needs_review
 
