@@ -26,7 +26,7 @@ export function isCheckZone(zone: Zone): boolean {
 
 // The fixed, closed set of device types the Count Agent is allowed to return.
 // Never let free text from the API leak past this into a <select>.
-export const DEVICE_TYPES = ["cone", "sign", "barricade", "delineator", "unknown"] as const;
+export const DEVICE_TYPES = ["cone", "sign", "barricade", "delineator", "barrel", "unknown"] as const;
 export type DeviceType = (typeof DEVICE_TYPES)[number];
 
 export interface SessionRef {

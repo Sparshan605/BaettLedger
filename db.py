@@ -18,7 +18,7 @@ import pyodbc
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
-APPROVED_DEVICE_TYPES = {"cone", "sign", "barricade", "delineator"}
+APPROVED_DEVICE_TYPES = {"cone", "sign", "barricade", "delineator", "barrel"}
 
 # The day a session belongs to, as the crew sees it.
 #

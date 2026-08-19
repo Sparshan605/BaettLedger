@@ -52,7 +52,7 @@ CREATE TABLE count_detection (
     detection_id INT IDENTITY(1,1) PRIMARY KEY,
     event_id     INT          NOT NULL REFERENCES count_event(event_id),
     device_type  NVARCHAR(20) NOT NULL
-        CHECK (device_type IN ('cone','sign','barricade','delineator','unknown')),
+        CHECK (device_type IN ('cone','sign','barricade','delineator','barrel','unknown')),
     count        INT          NOT NULL,
     CONSTRAINT uq_detection UNIQUE (event_id, device_type)
 );

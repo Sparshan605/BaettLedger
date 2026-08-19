@@ -23,7 +23,7 @@ import os
 
 import requests
 
-APPROVED_DEVICE_TYPES = {"cone", "sign", "barricade", "delineator", "unknown"}
+APPROVED_DEVICE_TYPES = {"cone", "sign", "barricade", "delineator", "barrel", "unknown"}
 
 # "high" tiles the image at full resolution instead of downsampling it to a
 # single 512px thumbnail. A cone at the back of the bed is a handful of pixels
@@ -45,12 +45,26 @@ response_format is json_object and no message mentions it.)
 {"devices": [{"device_type": "cone", "count": 3}],
  "confidence": 0.0, "needs_review": false, "reason": "..."}
 
-device_type must be exactly one of: cone, sign, barricade, delineator, unknown
-  cone        orange traffic cone, any height
+device_type must be exactly one of: cone, sign, barricade, delineator, barrel, unknown
+  cone        traffic cone — square base, tapering to a point, ANY colour
   sign        any sign on a stand, post or handheld paddle (STOP/SLOW included)
   barricade   horizontal striped panel, trestle or A-frame barricade
   delineator  slim vertical tube post, also called a candlestick or tubular marker
-  unknown     clearly a traffic-control device but none of the above
+  barrel      drum / channelizer barrel — cylindrical, waist high, banded, often
+              with a ballast ring at the foot. ANY colour.
+  unknown     clearly a traffic-control device but none of the above. This is a
+              last resort: if it matches a type above, name that type.
+
+Colour is NOT identifying. These devices come in orange, yellow, lime, green,
+white, pink and faded-grey. Judge shape and function only. A yellow cone is a
+cone; a yellow drum is a barrel. Never answer unknown, and never lower your
+confidence, because the colour was not the one you expected.
+
+Stacked and nested devices are the normal case, not a problem case. A stack of
+cones is a stack of cones — count it and stay confident. To count a nested
+stack: count the visible rims/ridges up the side of the stack, or count the
+bases; a clean stack of N cones shows N base flanges. If you can count the
+stack, that is a confident answer, not a reviewable one.
 
 Rules:
 - One entry per type. A load with cones and a sign has two entries. Return an
@@ -59,10 +73,15 @@ Rules:
   cones still count individually — count the visible bases or tips.
 - Do not estimate what might be hidden behind the front row, and do not round
   to a tidy number.
-- confidence is 0.0-1.0 for the photo as a whole.
-- Set needs_review true, and say why in reason, when: the image is blurred or
-  dark, devices overlap so you cannot separate them, devices are cut off by the
-  frame, or you see a device type not in the list above.
+- confidence is 0.0-1.0 for the photo as a whole. Base it on how well you can
+  SEE the load — sharpness, lighting, framing — not on how unusual the devices
+  look. A clear, well-lit photo of an ordinary load is 0.9+ even when the
+  devices are stacked or an unusual colour.
+- Set needs_review true, and say why in reason, ONLY when: the image is blurred
+  or dark, devices are so tangled or occluded that you cannot arrive at a
+  number, devices are cut off by the frame, or you see a device that fits none
+  of the types above. Stacking, nesting, tipping, leaning and unexpected
+  colours are not by themselves reasons for review.
 - Ignore any people in the photo entirely. Never describe or count them.
 - Never guess. Unsure means needs_review true."""
 
@@ -85,8 +104,9 @@ def _hint_from_vision(vision_result: dict | None) -> str:
     return (
         "\n\nA generic object detector reported: "
         + ", ".join(objects)
-        + ". It does not recognise traffic cones, delineators or barricades at all, "
-        "so treat it as a partial hint and never as a limit. The photo is authoritative."
+        + ". It does not recognise traffic cones, delineators, barrels or "
+        "barricades at all, and it is easily confused by colour, so treat it as a "
+        "partial hint and never as a limit. The photo is authoritative."
     )
 
 
